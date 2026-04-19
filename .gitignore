@@ -1,0 +1,27 @@
+# Data and secrets
+data/
+.env
+*.cookies
+data/.cookies/
+.claude/settings.local.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.ruff_cache/
+
+# Node / Electron
+node_modules/
+frontend/dist/
+frontend/build/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

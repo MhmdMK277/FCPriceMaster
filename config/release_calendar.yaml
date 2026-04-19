@@ -1,0 +1,36 @@
+# Known annual promo windows for EA FC Ultimate Team.
+# Dates are approximate; confirmed dates come from EA announcements (signals table).
+# Used to inject "T-N days from promo X" context into LLM prompts.
+
+game_edition: fc26
+
+promos:
+  - name: Winter Wildcards
+    window_start: "12-01"  # MM-DD
+    window_end: "12-20"
+    notes: Early December; card upgrades based on real-world winter form
+
+  - name: TOTY
+    window_start: "01-06"
+    window_end: "01-20"
+    notes: Team of the Year; biggest price spike of the year for high-rated players
+
+  - name: Future Stars
+    window_start: "01-20"
+    window_end: "02-05"
+    notes: Young player promo; mid-rated cards can spike
+
+  - name: FUT Birthday
+    window_start: "03-20"
+    window_end: "04-10"
+    notes: Anniversary promo; random card upgrades
+
+  - name: TOTS
+    window_start: "04-25"
+    window_end: "06-20"
+    notes: Team of the Season; league by league rollout; biggest sustained market event
+
+  - name: FC27 Launch
+    window_start: "09-25"
+    window_end: "10-05"
+    notes: New game launch; FC26 market collapses post-launch

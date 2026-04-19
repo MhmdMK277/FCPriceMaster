@@ -1,0 +1,41 @@
+# Data source URLs and config.
+# All scraper URLs live here — no URLs hardcoded in scraper modules.
+# Update when source sites change routes (especially at FIFA year transition).
+
+game_edition: fc26
+
+sources:
+  futgg:
+    enabled: true
+    base_url: "https://www.fut.gg"
+    endpoints:
+      hot_cards: "/fc26/players/?sort=-ps5_price&limit=100"
+      card_prices: "/fc26/players/{card_id}/price-history/"
+    rate_limit_seconds: 2.5
+    user_agents_rotate: true
+
+  # Future sources (Phase 2):
+  twitter:
+    enabled: false
+    accounts:
+      - "FUTSheriff"
+      - "FUTScoreboard"
+      - "FUTDonkey"
+    cookies_path: "data/.cookies/x.json"
+    poll_interval_minutes: 10
+
+  discord:
+    enabled: false
+    config_path: "config/discord_servers.yaml"
+
+  reddit:
+    enabled: false
+    subreddits:
+      - "FUT_Economy"
+      - "EASportsFC"
+    poll_interval_minutes: 30
+
+  ea_news:
+    enabled: false
+    rss_url: "https://www.ea.com/games/ea-sports-fc/rss"
+    poll_interval_minutes: 60
