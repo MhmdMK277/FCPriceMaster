@@ -13,4 +13,9 @@ Push-Location "$root\frontend"
 pnpm install
 Pop-Location
 
+Write-Host "==> Installing Playwright Chromium browser..." -ForegroundColor Cyan
+Push-Location "$root\backend"
+uv run playwright install chromium
+Pop-Location
+
 Write-Host "==> Setup complete." -ForegroundColor Green

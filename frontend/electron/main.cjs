@@ -1,12 +1,15 @@
 const { app, BrowserWindow } = require('electron');
 const path = require('path');
 
+app.setName('FCPriceMaster');
+
 const isDev = process.env.NODE_ENV !== 'production';
 
 function createWindow() {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
+    title: 'FCPriceMaster',
     backgroundColor: '#0f172a',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),

@@ -8,11 +8,13 @@ sources:
   futgg:
     enabled: true
     base_url: "https://www.fut.gg"
+    # Scraping method: Playwright DOM scraping of public pages only (NOT /api/*)
+    # robots.txt disallows /api/* — we navigate public pages and read rendered DOM
     endpoints:
-      hot_cards: "/fc26/players/?sort=-ps5_price&limit=100"
-      card_prices: "/fc26/players/{card_id}/price-history/"
-    rate_limit_seconds: 2.5
-    user_agents_rotate: true
+      hot_cards: "/players/trending/"          # public trending list, platform-switched via UI
+      card_detail: "/players/{slug}/{card_key}/"  # card detail page (slug found from trending list)
+    rate_limit_min_seconds: 5
+    rate_limit_max_seconds: 10
 
   # Future sources (Phase 2):
   twitter:

@@ -41,8 +41,17 @@ def applied_migrations(conn: sqlite3.Connection) -> set[str]:
     return {row[0] for row in rows}
 
 
-def run_migrations() -> None:
-    conn = get_connection()
+def run_migrations(db_path: str | None = None) -> None:
+    if db_path is not None:
+        import sqlite3 as _sq
+        from pathlib import Path as _Path
+        _Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        conn = _sq.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA foreign_keys=ON;")
+    else:
+        conn = get_connection()
     ensure_migrations_table(conn)
     already_applied = applied_migrations(conn)
 

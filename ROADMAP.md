@@ -26,16 +26,19 @@ Update status at the end of every session. Do not skip ahead — finish the curr
 - [x] Pydantic models mirroring each table in `backend/src/db/models.py`
 
 ### 1.3 FUT.GG scraper (first data source)
-- [ ] Inspect FUT.GG to identify the most stable endpoints (prefer JSON APIs over HTML if available)
-- [ ] `backend/src/scrapers/base.py` with the schema-guard scraper base class
-- [ ] `backend/src/scrapers/futgg.py` implementing:
-  - [ ] `fetch_hot_cards(platform)` — returns list of top-N cards by volume proxy
-  - [ ] `fetch_card_prices(card_key, platform)` — returns recent price history
-  - [ ] Schema validation on every response
-  - [ ] Rate limiting (≥2s between requests, randomized UA)
-- [ ] Persist results to `cards`, `card_attributes`, `price_snapshots`
-- [ ] Write success/failure to `scraper_health` on every run
-- [ ] `--once` CLI flag for manual testing: `uv run python -m backend.scrapers.futgg --once --platform pc`
+- [x] Inspect FUT.GG to identify the most stable endpoints — findings in `docs/futgg_endpoints.md`
+- [x] Scraper approach decision: Playwright + DOM scraping of public pages only (no /api/*)
+- [x] `backend/src/scrapers/base.py` — `SchemaGuardError`, `HttpxScraperBase`, `PlaywrightScraperBase` with CMP dismiss + platform switch + stealth
+- [x] `backend/src/scrapers/futgg.py` implementing:
+  - [x] `fetch_hot_cards(platform)` — trending list page, extracts position/rating/price from card badge DOM
+  - [x] `fetch_card_prices(card_key, platform)` — card detail page, extracts current BIN price
+  - [x] Schema validation on every card (SchemaGuardError + scraper_health on mismatch)
+  - [x] Rate limiting (5–10s jitter, single shared Playwright context)
+- [x] Persist results to `cards`, `card_attributes`, `price_snapshots`
+- [x] Write success/failure to `scraper_health` on every run
+- [x] `--once` CLI: `uv run python -m src.scrapers.futgg --once --platform pc --limit N`
+- [x] 18 tests passing (pytest); live smoke test: 5 cards × 2 platforms → DB OK, both platforms populated
+- [!] Known gap: `/players/trending/` shows ~30 cards. For 500-card coverage, need additional list pages or pagination — deferred to 1.3 extension after scheduler is wired (1.4)
 
 ### 1.4 Scheduler
 - [ ] `backend/src/workers/scheduler.py` using APScheduler

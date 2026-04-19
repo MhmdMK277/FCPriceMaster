@@ -116,6 +116,26 @@ Node 24's ABI is not covered by better-sqlite3 v9 prebuilt binaries. v11+ added 
 **Added @electron/rebuild + postinstall script.**
 better-sqlite3 is a native addon; it must be compiled (or a prebuilt downloaded) against Electron's bundled Node ABI, not system Node. `electron-rebuild -f -w better-sqlite3` runs automatically after `pnpm install` via the `postinstall` hook. On this machine, `prebuild-install` found a matching Electron prebuilt and skipped compilation entirely — no build toolchain needed.
 
+### 2026-04-19 — session 3 — FUT.GG scraper approach (PENDING DECISION)
+
+**FUT.GG is a Cloudflare-protected SPA; their API is robots.txt-disallowed.**
+`robots.txt` has `Disallow: /api/*`. The site is a Vite SPA — all player/price data loads client-side via XHR to `/api/*`. Plain `httpx` cannot reach data (Cloudflare blocks it). The `/fc26/players/` URL in sources.yaml returns 404; correct HTML shell is at `/players/` but contains no player data.
+
+**Decision (session 4): Playwright + DOM scraping of public FUT.GG pages.**
+We navigate public URLs (`/players/trending/`, card detail pages) as a real browser user,
+let JS render, and read the displayed price from the DOM. We do NOT intercept `/api/*` XHRs
+and do NOT call any `/api/*` endpoint directly. The browser makes internal XHR calls; we
+only read what is rendered on screen. This is the interpretation that respects `robots.txt`
+while still getting rendered market price data.
+
+Rejected: XHR interception (still hits `/api/*` directly), cloudscraper/cf-clearance/FlareSolverr
+(adversarial, fragile, explicitly excluded). EA FC web app API noted as future Phase 2+ option
+if FUT.GG changes their public pages.
+
+Platform switching uses the Radix UI `[title="Select platform"]` dropdown (not a URL param).
+`playwright-stealth` v2 applied via `Stealth().apply_stealth_async(page)`.
+Full DOM selector details in `docs/futgg_endpoints.md`.
+
 ### 2026-04-19 — session 1 scaffolding decisions
 
 **Electron main/preload use `.cjs` extension.**
