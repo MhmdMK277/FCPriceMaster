@@ -41,11 +41,12 @@ Update status at the end of every session. Do not skip ahead — finish the curr
 - [!] Known gap: `/players/trending/` shows ~30 cards. For 500-card coverage, need additional list pages or pagination — deferred to 1.3 extension after scheduler is wired (1.4)
 
 ### 1.4 Scheduler
-- [ ] `backend/src/workers/scheduler.py` using APScheduler
-- [ ] Jobs: FUT.GG hot-list every 20 min (both platforms), cold-list every 2h
-- [ ] Graceful shutdown on SIGINT (finish in-flight request, commit, exit)
-- [ ] Log to `data/logs/scheduler.log` with rotation
-- [ ] Entry point: `uv run python -m backend.workers.scheduler`
+- [x] `backend/src/workers/scheduler.py` using APScheduler AsyncIOScheduler
+- [x] Jobs: FUT.GG trending every 20 min (PC at +30s, console at +90s); health prune daily 03:00 UTC
+- [x] Graceful shutdown on SIGINT/SIGTERM (Windows fallback via signal.signal); drains in-flight jobs
+- [x] Log to `data/logs/scheduler.log` with RotatingFileHandler (10MB, 5 backups)
+- [x] Entry point: `uv run python -m src.workers.scheduler`
+- [x] 8 scheduler tests passing (job registration, intervals, stagger, exception isolation, shutdown)
 
 ### 1.5 Electron dashboard (read-only)
 - [ ] Electron main process: spawns backend scheduler as child process on app launch (with a toggle in a settings panel to disable)

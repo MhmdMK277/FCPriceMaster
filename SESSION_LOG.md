@@ -21,6 +21,39 @@ Required fields per entry: date, session number, goal, done, next, gotchas, chan
 
 <!-- Entries go below this line, newest first -->
 
+### 2026-04-19 — session 5
+**Goal:** Phase 1.4 — wire FutGGScraper into APScheduler: 3 jobs, log rotation, graceful shutdown, tests.
+
+**Done:**
+- 1.4 — Rewrote `backend/src/workers/scheduler.py` from stub to full implementation:
+  - `setup_logging()`: RotatingFileHandler (10MB, 5 backups) + StreamHandler to stdout, both at INFO
+  - `job_trending(scraper, platform)`: try/except, never re-raises — logs DONE or FAILED with elapsed time
+  - `job_prune_health(db_path)`: deletes scraper_health rows older than 30 days, try/except
+  - `build_scheduler(scraper, db_path, *, pc_first_run, console_first_run)`: factory that does NOT call `.start()` — extracted for testability. PC job at +30s, console at +90s, both every 20min; prune cron 03:00 UTC; coalesce=True, max_instances=1 on all.
+  - `run(db_path)`: full lifecycle — migrations, scraper.__aenter__, build+start scheduler, signal handlers (loop.add_signal_handler + Windows SIGTERM fallback), await stop_event, shutdown(wait=True), scraper.__aexit__
+- 1.4 — Wrote `backend/tests/test_scheduler.py`: 8 tests — job IDs registered, interval/cron trigger types, stagger (console ≥30s after PC), exception isolation (job_trending, job_prune_health, scheduler survives exception), Playwright context closed on shutdown, prune deletes old rows. All 8 pass.
+- 1.4 — Total test suite: 26/26 passing (18 futgg + 8 scheduler).
+- 1.4 — Live smoke test: scheduler started, PC job fired at +30s, scraped 30 cards in ~8.4s, scraper_health row written OK.
+- Updated `scripts/dev.ps1`: `taskkill /F /T /PID` for recursive process tree kill (catches Chromium grandchildren). `data/logs/` dir created on launch.
+- Updated ARCHITECTURE.md with session 5 decisions (AsyncIOScheduler choice, build_scheduler extraction, shared Playwright context, Windows SIGTERM fallback, taskkill approach).
+
+**Next:** Phase 1.5 — Electron dashboard. Electron main spawns scheduler as child process. Preload exposes better-sqlite3 queries (getCards, getPriceSnapshots, getScraperHealth). Views: Top Movers (24h price change, filterable by platform), Card detail (price chart + snapshots), Scraper Health. Platform toggle (PC/Console) in localStorage. Dark mode default.
+
+**Gotchas:**
+- `AsyncIOScheduler` is required (not `BackgroundScheduler`) because scrapers are async (Playwright). BackgroundScheduler would require thread-safe bridges into the event loop.
+- `scheduler.shutdown(wait=False)` raises `SchedulerNotRunningError` if the scheduler was never started. Always guard with `if scheduler.running:` in tests.
+- Windows: `loop.add_signal_handler(SIGTERM, ...)` raises `NotImplementedError`. Must catch `(NotImplementedError, OSError)` and fall back to `signal.signal(SIGTERM, lambda _s, _f: ...)`.
+- `taskkill /F /T /PID` is the only reliable way to kill Playwright's Chromium grandchild on Windows. `Stop-Process -Force` only kills the direct child; `Get-CimInstance Win32_Process` tree traversal is fragile.
+- `build_scheduler()` intentionally does not call `.start()` — this is what makes synchronous test inspection of job registration possible without a running event loop.
+- Entry point is `uv run python -m src.workers.scheduler` (run from `backend/`), NOT `python -m backend.workers.scheduler`.
+
+**Changed files:**
+- `backend/src/workers/scheduler.py` (full rewrite from stub)
+- `backend/tests/test_scheduler.py` (new)
+- `scripts/dev.ps1` (taskkill /F /T + data/logs mkdir)
+- `ARCHITECTURE.md` (session 5 decisions)
+- `ROADMAP.md` (1.4 tasks marked [x])
+
 ### 2026-04-19 — session 4
 **Goal:** Phase 1.3 — implement FUT.GG scraper using Playwright DOM scraping (owner decision: public pages only, no /api/* hits).
 

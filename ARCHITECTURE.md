@@ -149,3 +149,20 @@ ARCHITECTURE.md described `tagged_cards` as a field on `signals`; implemented as
 
 **`_migrations` table lives in the same DB file.**
 Migration state tracked in `_migrations` inside `data/fcpricemaster.db`. Kept alongside data (not a separate file) because the DB is single-file and gitignored; the table is idempotently created by both `0001_initial.sql` and `migrate.py`'s bootstrap step.
+
+### 2026-04-19 — session 5 — scheduler design decisions
+
+**`AsyncIOScheduler` over `BackgroundScheduler`.**
+Scrapers are all `async` (Playwright). `AsyncIOScheduler` runs jobs directly in the existing event loop — no `asyncio.run()` inside a thread needed. `BackgroundScheduler` would require thread-safe bridges into async code and is the wrong model.
+
+**`build_scheduler()` extracted for testability.**
+The scheduler factory does not call `.start()`. This lets unit tests inspect job registration (IDs, trigger types, intervals) without needing a live event loop running. `run()` (the entry point) calls `.start()` separately after `build_scheduler()`.
+
+**Single shared Playwright browser + context across all scraper jobs.**
+`FutGGScraper` is constructed once in `run()`, `__aenter__` called once, and passed as an arg to every job. Both PC and console jobs share the same browser context (staggered by 60s to avoid race). This avoids spawning a new Chromium on every 20-min tick. `__aexit__` called once on graceful shutdown.
+
+**Windows SIGTERM fallback.**
+`loop.add_signal_handler(SIGTERM, ...)` raises `NotImplementedError` on Windows. We wrap in `try/except (NotImplementedError, OSError)` and fall back to `signal.signal(SIGTERM, lambda ...)` for the Windows path. SIGINT works via `add_signal_handler` on both platforms.
+
+**`taskkill /F /T /PID` in dev.ps1 for recursive kill.**
+Python spawns Chromium as a grandchild. `Stop-Process -Force` only kills the direct child (the PowerShell wrapper). `taskkill /F /T` kills the entire process tree rooted at the backend PID, ensuring Chromium.exe is always cleaned up when the Electron window closes.
