@@ -166,6 +166,11 @@ class FutGGScraper(PlaywrightScraperBase):
         page = await self._new_page()
         try:
             await self._navigate(page, "https://www.fut.gg/players/trending/")
+            # domcontentloaded fires before JS renders cards; wait for at least one card anchor.
+            try:
+                await page.wait_for_selector('a[href*="/players/"][href*="/26-"]', timeout=90000)
+            except Exception:
+                pass  # proceed anyway; count check below handles empty page gracefully
             await self._set_platform(page, platform)
 
             # Card anchors: try the CSS class FUT.GG uses, fall back to href pattern

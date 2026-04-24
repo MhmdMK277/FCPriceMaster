@@ -49,14 +49,14 @@ Update status at the end of every session. Do not skip ahead — finish the curr
 - [x] 8 scheduler tests passing (job registration, intervals, stagger, exception isolation, shutdown)
 
 ### 1.5 Electron dashboard (read-only)
-- [ ] Electron main process: spawns backend scheduler as child process on app launch (with a toggle in a settings panel to disable)
-- [ ] Preload exposes `better-sqlite3` queries to renderer safely (no arbitrary SQL from renderer)
-- [ ] Views:
-  - [ ] **Top Movers** — cards with biggest price change in last 24h, filterable by platform
-  - [ ] **Card detail** — search, then see price chart (recharts), recent snapshots, attributes
-  - [ ] **Scraper Health** — per-source last run, last success, failure streak, last error
-- [ ] Platform toggle (PC / Console) persistent in localStorage
-- [ ] Dark mode default
+- [x] Electron main process: spawns backend scheduler as child process on app launch (with a toggle in a settings panel to disable)
+- [x] Preload exposes `better-sqlite3` queries to renderer safely (no arbitrary SQL from renderer)
+- [x] Views:
+  - [x] **Top Movers** — cards with biggest price change in last 24h, filterable by platform
+  - [x] **Card detail** — search, then see price chart (recharts), recent snapshots, attributes
+  - [x] **Scraper Health** — per-source last run, last success, failure streak, last error
+- [x] Platform toggle (PC / Console) persistent in localStorage
+- [x] Dark mode default
 
 ### 1.6 Phase 1 exit criteria
 - [ ] 48h continuous run with zero silent failures (any failure visible in Scraper Health)
@@ -71,12 +71,24 @@ Update status at the end of every session. Do not skip ahead — finish the curr
 **Goal:** Discord, Twitter, Reddit, EA news, fixtures all landing in `signals`. First LLM-assisted feature (the "Ask" mode).
 **Target:** 2–3 weeks after Phase 1 sign-off.
 
-### 2.1 Discord ingestion
-- [ ] Owner creates a Discord bot account, joins trading servers with it
-- [ ] `discord.py` client, read-only intents
-- [ ] Log every message from configured channels into `signals`
-- [ ] Card-name tagger: fuzzy-match message text against `cards` table, populate `signal_card_tags` join
-- [ ] Config: `config/discord_servers.yaml` lists server IDs and channel IDs
+### 2.1 Discord ingestion (Phase 2a) — COMPLETE
+- [x] Phase 2a bugfix (session 9): forwarded message content extraction (MessageSnapshot API), dedup race condition (BEGIN IMMEDIATE), scraper timeout (45s→90s + domcontentloaded), dotenv warnings suppressed; 2 stale signals reprocessed with real content
+- [x] Owner created Discord bot; token stored in `.env`
+- [x] `discord.py` 2.7.1 client, read-only intents (guilds + guild_messages + message_content)
+- [x] Bot reads only 3 allowlisted channels on owner's server; ignores all others
+- [x] Forwarded messages parsed via `message_snapshots` API; direct messages tagged 'owner_direct'
+- [x] `config/discord_sources.yaml` — channel ID → source_label, reliability, notes
+- [x] Migration 0002: `source_server`, `original_author`, `original_ts_utc`, `has_attachments` on signals; `signal_attachments` table; `discord_message_ids` dedup table
+- [x] Backfill on startup: last 100 messages per channel processed on connect
+- [x] Graceful shutdown on SIGINT/SIGTERM (same Windows fallback pattern as scheduler)
+- [x] Log to `data/logs/discord_ingest.log` (10MB rotating, 5 backups)
+- [x] Signals view in dashboard: filter by source + time window, read-only, 60s auto-refresh
+- [x] dev.ps1 spawns Discord worker; `ENABLE_DISCORD_INGEST=false` to skip
+- [x] Electron main.cjs spawns/kills Discord worker; `settings.enableDiscordIngest` toggle
+- [x] 33/33 tests passing (7 new discord tests + 26 existing)
+- [x] Live smoke test: bot connected, all 3 channels visible (#src-free-server, #src-mitchy-duck, #src-miazaga)
+- [ ] Card-name tagger: fuzzy-match message text against `cards` table, populate `signal_card_tags` — deferred to Phase 2b
+- [!] Historical backfill beyond 100 messages — parked (owner decision)
 
 ### 2.2 Twitter/X ingestion via Playwright
 - [ ] One-time: owner creates throwaway X account, extracts session cookies, stores in `data/.cookies/x.json` (gitignored)

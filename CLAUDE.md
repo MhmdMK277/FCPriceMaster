@@ -56,10 +56,12 @@ config/      YAML configs (release_calendar.yaml, sources.yaml)
 
 ## Commands
 - First-time setup: `scripts\setup.ps1`
-- Dev launch (backend + frontend): `scripts\dev.ps1`
-- Run scrapers once (manual): `uv run python -m backend.scrapers.futgg --once`
-- Apply DB migrations: `uv run python -m backend.db.migrate`
-- Seed test data: `uv run python -m backend.db.seed`
+- Dev launch (backend + frontend + Discord): `scripts\dev.ps1`
+- Dev launch without Discord: `$env:ENABLE_DISCORD_INGEST="false"; scripts\dev.ps1`
+- Run scrapers once (manual): `uv run python -m src.scrapers.futgg --once` (run from `backend/`)
+- Run Discord ingest standalone (debug): `uv run python -m src.workers.discord_ingest` (run from `backend/`)
+- Apply DB migrations: `uv run python -m src.db.migrate` (run from `backend/`)
+- Seed test data: `uv run python -m src.db.seed` (run from `backend/`)
 
 ---
 
@@ -72,3 +74,13 @@ See **ROADMAP.md**. Do not skip ahead — finish the current phase's tasks befor
 - Prefer small, verifiable steps. After each meaningful change, confirm it runs.
 - When a design decision has more than one reasonable path, stop and ask rather than silently picking. Record the chosen path in ARCHITECTURE.md.
 - If any of the `.md` files contradict each other or something is unclear, halt and ask the user. Do not assume.
+
+---
+
+## Human intervention policy
+
+The owner does not run terminal commands for verification. Claude Code runs everything in its own shell and reports results. Specifically:
+- All DB queries, pytest runs, log inspections, and process checks are executed by Claude Code and summarized in the session report.
+- Never end a session with "please run X to verify" — verify it yourself first, then tell the owner what you observed.
+- The only things the owner does manually: (1) visual confirmation of UI via launching dev.ps1 when explicitly asked, (2) responding to decision prompts, (3) git commits at phase boundaries.
+- Scripts under `scripts/` must be robust to a broken user PATH. Resolve `uv` to its full path at script entry (use `Get-Command uv -ErrorAction SilentlyContinue` then fall back to `$env:USERPROFILE\.local\bin\uv.exe`). Same for `pnpm` and `node`. If resolution fails, print a clear error and exit 1 — do not propagate a cryptic "not recognized" error from a child process.

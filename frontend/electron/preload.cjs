@@ -1,50 +1,17 @@
-const { contextBridge } = require('electron');
-const path = require('path');
-
-// Resolve the DB path relative to the project root (two levels up from electron/)
-const DB_PATH = path.join(__dirname, '..', '..', '..', 'data', 'fcpricemaster.db');
-
-let db = null;
-
-function getDb() {
-  if (!db) {
-    try {
-      const Database = require('better-sqlite3');
-      db = new Database(DB_PATH, { readonly: true });
-      db.pragma('journal_mode = WAL');
-    } catch (err) {
-      console.error('Failed to open DB:', err.message);
-      return null;
-    }
-  }
-  return db;
-}
+const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('fcdb', {
-  getCards: () => {
-    const conn = getDb();
-    if (!conn) return [];
-    return conn.prepare('SELECT * FROM cards ORDER BY id').all();
-  },
+  // DB queries — main process owns the DB; preload relays via IPC
+  getTopMovers:     (opts) => ipcRenderer.invoke('db:getTopMovers', opts),
+  searchCards:      (opts) => ipcRenderer.invoke('db:searchCards', opts),
+  getCardDetail:    (opts) => ipcRenderer.invoke('db:getCardDetail', opts),
+  getScraperHealth: (opts) => ipcRenderer.invoke('db:getScraperHealth', opts),
+  getRecentSignals: (opts) => ipcRenderer.invoke('db:getRecentSignals', opts),
 
-  getPriceSnapshots: (cardId, platform) => {
-    const conn = getDb();
-    if (!conn) return [];
-    return conn
-      .prepare(
-        'SELECT * FROM price_snapshots WHERE card_id = ? AND platform = ? ORDER BY ts_utc DESC LIMIT 200'
-      )
-      .all(cardId, platform);
-  },
-
-  getScraperHealth: () => {
-    const conn = getDb();
-    if (!conn) return [];
-    return conn
-      .prepare(
-        `SELECT source, MAX(run_at_utc) as last_run, success, consecutive_failures, last_error
-         FROM scraper_health GROUP BY source`
-      )
-      .all();
-  },
+  // Settings + backend control
+  getSettings:    () => ipcRenderer.invoke('get-settings'),
+  setSetting:     (key, value) => ipcRenderer.invoke('set-setting', key, value),
+  restartBackend: () => ipcRenderer.invoke('restart-backend'),
+  stopBackend:    () => ipcRenderer.invoke('stop-backend'),
+  backendRunning: () => ipcRenderer.invoke('backend-running'),
 });

@@ -26,8 +26,10 @@ This shape is why we don't need years of training data to start. The LLM provide
 ### SQLite over Postgres
 Single file, zero admin, perfect for local. WAL mode allows the scraper to write while Electron reads concurrently without locking.
 
-### Electron reads SQLite directly via `better-sqlite3`
-No IPC / API layer needed for Phase 1. Python writes. Electron reads. When UI needs to trigger an action (e.g. "force refresh this card," "dismiss this recommendation"), a small localhost FastAPI is added in a later phase — not before.
+### Electron DB access uses IPC (main process owns DB, preload relays via ipcRenderer)
+**Decision 2026-04-19:** Electron's sandboxed preload cannot load native addons (`better-sqlite3`) or Node built-ins (`path`, `fs`). Attempting to do so causes "Unable to load preload script" and `window.fcdb` never attaches. Fix: DB is opened once in the main process (`openDb()`), SQL query functions live in `electron/db-queries.cjs` (shared by ipcMain handlers and `--selftest`), and preload.cjs exposes only `contextBridge` + `ipcRenderer` — no Node APIs. Renderer calls are all async (`ipcRenderer.invoke`). `sandbox: true` is now explicit in BrowserWindow config.
+
+When UI needs to trigger an action (e.g. "force refresh this card," "dismiss this recommendation"), a small localhost FastAPI is added in a later phase — not before.
 
 ### Python backend as a single long-lived process
 APScheduler inside one process running all scrapers on their own cadences. Graceful shutdown on SIGINT. Electron main process spawns it as a child on startup (with a user-togglable off switch).
@@ -149,6 +151,59 @@ ARCHITECTURE.md described `tagged_cards` as a field on `signals`; implemented as
 
 **`_migrations` table lives in the same DB file.**
 Migration state tracked in `_migrations` inside `data/fcpricemaster.db`. Kept alongside data (not a separate file) because the DB is single-file and gitignored; the table is idempotently created by both `0001_initial.sql` and `migrate.py`'s bootstrap step.
+
+### 2026-04-19 — session 6 — Electron dashboard decisions
+
+**`card_attributes.key` is a SQLite reserved word — use correlated subqueries.**
+`LEFT JOIN card_attributes ra ON c.id = ra.card_id AND ra.key = 'rating'` silently returns NULL because `key` is treated as a keyword in the ON clause with a string literal. Workaround: correlated subquery `(SELECT value FROM card_attributes ca WHERE ca.card_id=c.id AND ca.key=? LIMIT 1)` with a bound parameter. Do NOT use `LEFT JOIN` with literal key comparisons anywhere in this codebase.
+
+**DB path from Electron: 2 levels up from `frontend/electron/`.**
+`path.join(__dirname, '..', '..', 'data', 'fcpricemaster.db')` resolves to `FCPriceMaster/data/`. Three levels up overshoots to `C:\Claude Agent\`. Both main.cjs and preload.cjs must use 2 levels.
+
+**IPC architecture for Phase 1.5: direct better-sqlite3 in preload, ipcRenderer.invoke for settings.**
+DB reads are synchronous (better-sqlite3) and exposed directly via contextBridge. Settings (which require main-process file I/O) go through ipcRenderer.invoke. This keeps the hot path (UI rendering) synchronous while keeping main-process state writes in the main process.
+
+**`--selftest` flag on Electron main.**
+`electron . --selftest` opens the DB in main process, runs all 4 IPC queries, prints JSON, exits 0. Used as a headless smoke test in CI/verification. Added as `pnpm selftest` script.
+
+### 2026-04-20 — session 8 — Discord ingestion (Phase 2a)
+
+**Discord ingestion uses bot-on-owner's-server + forward pattern. Bot never joins external servers.**
+Owner forwards messages from external trading Discords into three channels on their own server
+(category 1495557586869813369). Bot reads only those three channels and ignores everything else,
+including any other server it may be accidentally added to.
+
+**Message forwards parsed via discord.py `message_snapshots` API.**
+`message.message_snapshots[0].message` contains original content, timestamp, author, attachments.
+Non-forward (owner-typed) messages are logged as `signal_type='direct'` with `source_server='owner_direct'`.
+All parsing is in the pure function `parse_message()` — testable without a Discord connection.
+
+**Images stored as URLs only in 2a; vision-based card extraction deferred to Phase 2d LLM integration.**
+`signal_attachments` table stores URL, content_type, width, height. No image download/processing yet.
+
+**Dedup via `discord_message_ids` table, keyed on Discord's message ID.**
+Discord message IDs are globally unique. The table provides an O(1) dedup check before any INSERT.
+`signals.source_id` also stores the message ID — the UNIQUE(source, source_id) constraint is a
+secondary guard, but the explicit dedup table is the primary check.
+
+**Discord worker is a separate long-running process (not in APScheduler).**
+The bot maintains a persistent WebSocket connection to Discord. It cannot be a scheduled job.
+Electron main.cjs and dev.ps1 both spawn/kill it alongside the scheduler. Toggle via
+`ENABLE_DISCORD_INGEST` env var (default: true) or `settings.enableDiscordIngest` in settings.json.
+
+**`guilds` intent is required alongside `guild_messages` + `message_content`.**
+Without `guilds` intent, discord.py does not populate the guild/channel cache, so
+`guild.get_channel()` returns None even for visible channels. `guilds` is non-privileged.
+`message_content` IS privileged — must be enabled in Discord Developer Portal.
+
+**`migrate.py` default `DB_PATH` was `parents[4]` (wrong — pointed to `C:\Claude Agent\`).**
+Fixed to `parents[3]` (correct — points to `FCPriceMaster/`). Previously only the scheduler
+(which always passes `db_path` explicitly) used the correct path; standalone migration runs
+would silently create a phantom DB in the wrong location.
+
+**Owner's `.env` file uses label-value format, not standard KEY=VALUE dotenv format.**
+`load_token()` first tries standard dotenv parsing, then falls back to scanning the file for a
+line containing exactly "Token" followed by the token value on the next line.
 
 ### 2026-04-19 — session 5 — scheduler design decisions
 

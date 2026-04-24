@@ -232,10 +232,10 @@ class PlaywrightScraperBase(ScraperBase, ABC):
             await asyncio.sleep(wait - elapsed)
         self._last_nav_at = time.monotonic()
 
-    async def _navigate(self, page: Page, url: str, wait_until: str = "networkidle") -> None:
+    async def _navigate(self, page: Page, url: str, wait_until: str = "domcontentloaded") -> None:
         await self._jitter_wait()
         logger.debug("Navigating to %s", url)
-        await page.goto(url, wait_until=wait_until, timeout=45000)
+        await page.goto(url, wait_until=wait_until, timeout=90000)
         await self._dismiss_cmp(page)
 
     @staticmethod

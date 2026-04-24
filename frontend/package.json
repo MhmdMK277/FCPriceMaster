@@ -11,6 +11,7 @@
     "build:electron": "tsc -b && vite build && electron-builder",
     "lint": "eslint .",
     "preview": "vite preview",
+    "selftest": "electron . --selftest",
     "postinstall": "electron-rebuild -f -w better-sqlite3"
   },
   "dependencies": {

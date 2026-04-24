@@ -1,0 +1,20 @@
+# Mapping of owner-server channel IDs to source metadata.
+# Owner forwards messages from external trading servers INTO these channels.
+# We log each forwarded message as a signal with source='discord' and
+# source_server set to the source_label below.
+#
+# Target guild: 1475125630180917268
+# Category:     1495557586869813369
+channels:
+  "1495558120662106314":
+    source_label: "free-server"
+    reliability: "unknown"
+    notes: "Zandorf68 EAFC 26 Trading Discord"
+  "1495558139632943275":
+    source_label: "mitchy-duck"
+    reliability: "unknown"
+    notes: ""
+  "1495558157492158575":
+    source_label: "miazaga"
+    reliability: "unknown"
+    notes: ""
