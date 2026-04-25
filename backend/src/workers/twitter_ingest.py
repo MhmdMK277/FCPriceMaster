@@ -394,9 +394,30 @@ class TwitterIngestWorker:
         if self._conn:
             self._conn.close()
 
+    async def _switch_to_following_tab(self, page: Page) -> bool:
+        """
+        Click the Following tab on /home. Returns True if successful.
+        The For You tab is the default; Following shows only accounts the user follows.
+        """
+        try:
+            tab = page.get_by_role("tab", name="Following")
+            if await tab.count() == 0:
+                # Fallback selector used by some Twitter DOM versions
+                tab = page.locator('[role="tab"]:has-text("Following")')
+            if await tab.count() == 0:
+                logger.warning("Following tab not found — staying on For You (selector may have changed)")
+                return False
+            await tab.first.click()
+            await page.wait_for_timeout(2000)  # let Following timeline reload
+            logger.info("Switched to Following tab")
+            return True
+        except Exception as exc:
+            logger.warning("Could not click Following tab: %s", exc)
+            return False
+
     async def poll_once(self) -> int:
         """
-        Navigate to /home, extract visible tweets, persist new ones.
+        Navigate to /home, switch to Following tab, extract visible tweets, persist new ones.
         Returns count of new signals ingested. Raises on fatal errors.
         """
         page: Page = await self._context.new_page()
@@ -410,6 +431,8 @@ class TwitterIngestWorker:
                 raise RuntimeError("login_required")
             if state == "rate_limited":
                 raise RuntimeError("rate_limited")
+
+            await self._switch_to_following_tab(page)
 
             raw_tweets = await _extract_tweets(page)
             logger.info("Timeline: found %d tweet articles", len(raw_tweets))

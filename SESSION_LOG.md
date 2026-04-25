@@ -21,6 +21,27 @@ Required fields per entry: date, session number, goal, done, next, gotchas, chan
 
 <!-- Entries go below this line, newest first -->
 
+### 2026-04-25 — session 18
+**Goal:** Fix Twitter worker pulling from "For You" algorithmic feed instead of "Following" timeline.
+
+**Done:**
+- Added `_switch_to_following_tab()` method to `TwitterIngestWorker`. After loading `/home` and waiting 3s, it clicks the "Following" tab (`[role="tab"]` with text "Following") and waits 2s for the timeline to reload. Falls back gracefully with a warning if the selector is not found (DOM change guard).
+- `poll_once()` now calls `_switch_to_following_tab()` before `_extract_tweets()`.
+- DB cleanup: ran DELETE on `signals WHERE source='twitter' AND source_server NOT IN ('FutSheriff','FUT_Scoreboard','FUTDonkey') AND source_server NOT LIKE '%FUT%' AND source_server NOT LIKE '%fut%'`.
+  - **10,911 non-FUT signals deleted** (were from For You: FabrizioRomano, elonmusk, FCBarcelona, etc.)
+  - **110 signals remain** (all have "FUT"/"fut" in handle — kept by LIKE filter per spec).
+  - Remaining distinct source_server values: FutSheriff(33), futucopy(15), Futdonk(9), connFUT(6), RkFutbol(6), babaFut_(4), FutbolJan10(4), FUT_Accountant(4), _Futbolero_(3), Fut_scoreboard(3), FUTxGG(3), FUTWIZ(3), FutureLab2025(2), FansdeFUT(2), and 13 others with 1 signal each.
+- **93 tests passing**, 0 failures.
+
+**Next:** Continue Phase 3 tasks per ROADMAP.
+
+**Gotchas:**
+- Twitter's Following tab `[role="tab"]:has-text("Following")` — covered by two selector attempts (get_by_role first, locator fallback). If Twitter changes the DOM, the worker logs a warning and falls back to For You rather than crashing.
+- The remaining 110 "FUT-containing" signals from prior runs are not from the 3 target accounts — they were from unrelated accounts whose handles happened to contain "FUT". They're benign historical noise; future polls will only see Following timeline.
+
+**Changed files:**
+- `backend/src/workers/twitter_ingest.py`
+
 ### 2026-04-25 — session 17
 **Goal:** Fix Ask.tsx history crash — `TypeError: Cannot read properties of undefined (reading 'toUpperCase')` in VerdictBadge.
 
