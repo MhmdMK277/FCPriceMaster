@@ -1,0 +1,12 @@
+accounts:
+  - handle: "FutSheriff"
+    category: "leaks"
+    priority: "high"
+  - handle: "FUT_Scoreboard"
+    category: "content_updates"
+    priority: "high"
+  - handle: "FUTDonkey"
+    category: "leaks"
+    priority: "medium"
+  # EasijdeFC and ABORTSEFIFA — to be verified on first run
+  # Add/remove handles here; worker reloads config on restart.

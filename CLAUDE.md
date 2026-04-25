@@ -56,10 +56,12 @@ config/      YAML configs (release_calendar.yaml, sources.yaml)
 
 ## Commands
 - First-time setup: `scripts\setup.ps1`
-- Dev launch (backend + frontend + Discord): `scripts\dev.ps1`
+- Dev launch (all workers + frontend): `scripts\dev.ps1`
 - Dev launch without Discord: `$env:ENABLE_DISCORD_INGEST="false"; scripts\dev.ps1`
+- Dev launch without Twitter: `$env:ENABLE_TWITTER_INGEST="false"; scripts\dev.ps1`
 - Run scrapers once (manual): `uv run python -m src.scrapers.futgg --once` (run from `backend/`)
 - Run Discord ingest standalone (debug): `uv run python -m src.workers.discord_ingest` (run from `backend/`)
+- Run Twitter ingest standalone (debug): `uv run python -m src.workers.twitter_ingest` (run from `backend/`)
 - Apply DB migrations: `uv run python -m src.db.migrate` (run from `backend/`)
 - Seed test data: `uv run python -m src.db.seed` (run from `backend/`)
 

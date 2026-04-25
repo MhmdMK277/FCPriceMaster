@@ -90,27 +90,48 @@ Update status at the end of every session. Do not skip ahead — finish the curr
 - [ ] Card-name tagger: fuzzy-match message text against `cards` table, populate `signal_card_tags` — deferred to Phase 2b
 - [!] Historical backfill beyond 100 messages — parked (owner decision)
 
-### 2.2 Twitter/X ingestion via Playwright
-- [ ] One-time: owner creates throwaway X account, extracts session cookies, stores in `data/.cookies/x.json` (gitignored)
-- [ ] Playwright script polling FUT Sheriff, FUT Scoreboard, FUT Donkey, others (list in `config/twitter_accounts.yaml`) every 10 min
-- [ ] Parse new tweets out of DOM, schema-guard, insert into `signals` with `source='twitter'`
-- [ ] Card tagger reused from Discord
+### 2.2 Twitter/X ingestion via Playwright — COMPLETE
+- [x] Owner exported session cookies to `data/.cookies/x_cookies.txt` (Netscape format, gitignored)
+- [x] `config/twitter_accounts.yaml` — list of monitored accounts with category + priority metadata
+- [x] `backend/src/utils/cookie_loader.py` — Netscape cookie file parser with session-cookie validation
+- [x] `backend/src/workers/twitter_ingest.py` — polls `/home` (Following timeline) every 50s via Playwright
+- [x] Tweet parsing via stable DOM selectors (`article[data-testid="tweet"]`, etc.)
+- [x] Schema-guard: logs WARNING if 0 tweet articles found, ERROR after 5 consecutive empty polls
+- [x] Login detection (URL contains `login`/`i/flow` → stop + error), rate-limit detection (empty-state element)
+- [x] `twitter_tweet_ids` dedup table (same pattern as `discord_message_ids`)
+- [x] Signals stored with `source_server=handle`, `signal_category`, `priority` from config
+- [x] Migration 0003: `signal_category`, `priority` on signals; `twitter_tweet_ids`, `reddit_post_ids` dedup tables
+- [x] `docs/twitter_sources.md` — monitored accounts, cookie refresh procedure, DOM selector reference
+- [x] Twitter worker spawned by `scripts/dev.ps1` and `frontend/electron/main.cjs` (toggle via `ENABLE_TWITTER_INGEST`)
+- [x] Live smoke test: 5 tweets ingested from Following timeline, health row OK
+- [ ] Card-name tagger: fuzzy-match tweet text against `cards` table — deferred to Phase 2d LLM
 
-### 2.3 Reddit ingestion
-- [ ] `praw` bot, read-only
-- [ ] Pull new posts and top comments from r/FUT_Economy and r/EASportsFC every 30 min
-- [ ] Separate signal_type for meta-discussion vs price/trade specific
+### 2.3 Reddit ingestion — COMPLETE
+- [x] `backend/src/workers/reddit_ingest.py` — httpx, no credentials; old.reddit.com JSON endpoint with Chrome UA bypasses 403
+- [x] Subreddits: r/fut, r/EASportsFC, r/fut_economy — fetch new every 5 min, hot every 30 min
+- [x] Dedup via `reddit_post_ids`; scraper_health on every run; schema-guard on malformed JSON
+- [x] 10/10 reddit tests passing (incl. 2 httpx-mock tests for JSON parsing + signal insertion)
+- [x] Live fetch verified: old.reddit.com returns real posts with correct JSON shape
 
 ### 2.4 EA news and fixtures
-- [ ] EA FC news RSS (or scrape if no RSS) every hour
+- [x] `backend/src/workers/ea_ingest.py` — RSS feed with HTML scrape fallback every 30 min via scheduler
+- [x] EA news ingesting real articles (5 verified in smoke test)
 - [ ] football-data.org free tier: fetch PL, La Liga, Serie A, Bundesliga, Ligue 1 fixtures daily
 - [ ] Fixture-to-signal job: 48h before a headline match, emit an "anticipate matchup SBC" signal tagged with both squads' common/informs cards
 
-### 2.5 "Ask" feature (first LLM integration)
-- [ ] New Electron view: paste text (tweet, Discord message, or free-form question)
-- [ ] Backend endpoint that pulls current price context for mentioned cards, sends to Claude API with a structured prompt, returns JSON verdict
-- [ ] Daily spend cap (configurable, default $0.50/day)
-- [ ] All responses logged to `recommendations` with `source='ask'`
+### 2.5 "Ask" feature (first LLM integration) — Phase 2d COMPLETE
+- [x] Fodder tracker: FUT.GG cheapest-by-rating pages, ratings 82-91, both platforms, every 30 min
+- [x] `backend/src/db/migrations/0004_fodder.sql` — fodder_snapshots, card_aliases, llm_calls, tagged_at
+- [x] `backend/src/workers/signal_tagger.py` — rapidfuzz 85% threshold, seeded aliases, every 5 min
+- [x] `backend/src/llm/context_builder.py` + `ask.py` — Python CLI for standalone testing
+- [x] Electron main.cjs `db:askLLM` IPC handler — Node fetch to Anthropic API, no subprocess
+- [x] Daily spend cap (configurable via config/llm_config.yaml, default $0.50/day)
+- [x] LLM calls logged to llm_calls table (model, tokens, cost_usd, input/output text)
+- [x] Fodder dashboard view (table + 7-day line chart per rating)
+- [x] Ask dashboard view (textarea, analyse button, verdict panel, history, cost tracker)
+- [x] Real LLM test: "TOTW OOP Wirtz gold under 63K" → AVOID/85%/high risk ($0.000445)
+- [x] Daily cap enforcement verified: correctly raises RuntimeError when exceeded
+- [x] All 89 tests passing; selftest exits 0 with all handlers registered
 
 ### 2.6 Phase 2 exit criteria
 - [ ] All five sources ingesting reliably for a week

@@ -21,6 +21,181 @@ Required fields per entry: date, session number, goal, done, next, gotchas, chan
 
 <!-- Entries go below this line, newest first -->
 
+### 2026-04-25 — session 12
+**Goal:** Phase 2d — Fodder tracker, card tagger, and Ask LLM feature.
+
+**Done:**
+
+**Migration 0004:** Applied cleanly. New tables: `fodder_snapshots`, `card_aliases`, `llm_calls`. New column: `signals.tagged_at`. All verified in live DB.
+
+**Fodder tracker:**
+- `FutGGScraper.fetch_fodder_cheapest(rating, platform)`: navigates `https://www.fut.gg/players/?sort=cheapest&rating={N}`, collects first 5 non-troll (≥500 coin) prices, computes cheapest_bin / second_cheapest_bin / median_bin, inserts into fodder_snapshots.
+- `FutGGScraper.fodder_sweep(ratings, platforms)`: sweeps all combos sequentially.
+- `--fodder` CLI flag added to `src.scrapers.futgg`: `uv run python -m src.scrapers.futgg --once --fodder --platform pc`.
+- Scheduler: `fodder_sweep` job runs every 30 min (first run +240s).
+- IPC: `db:getFodderSummary` (latest snapshot per rating with 24h change), `db:getFodderSnapshot` (7-day time series for a rating+platform).
+- Fodder dashboard view: table ratings 82-91 with cheapest/median/24h change, click row for recharts line chart.
+
+**Card tagger:**
+- `backend/src/workers/signal_tagger.py`: seeds `card_aliases` from cards table (full name, parts ≥5 chars, 17 common nicknames). Runs every 5 min via scheduler. Fuzzy-matches signal text (words + bigrams) against alias list using rapidfuzz token_sort_ratio at 85% threshold. Updates `signal_card_tags` + `signals.tagged_at`.
+- `rapidfuzz>=3.9` and `anthropic>=0.30` added to pyproject.toml and installed.
+
+**Ask LLM feature:**
+- `backend/src/llm/context_builder.py`: builds context dict from DB (matched cards, price history, fodder context, release calendar, recent signals). Card matching: alias table + word-level substring for names ≥5 chars.
+- `backend/src/llm/ask.py`: Python CLI. Loads ANTHROPIC_API_KEY from .env, checks daily cap, builds context, calls Claude Haiku 4.5, parses JSON verdict (strips markdown fences), logs to llm_calls.
+- `frontend/electron/main.cjs` `db:askLLM` handler: same logic in Node.js using built-in `fetch` to Anthropic API. Context built from better-sqlite3 DB. Writes to writable DB connection (separate from readonly read DB).
+- Daily cap: reads `config/llm_config.yaml` `daily_cap_usd: 0.50`. Enforced before every call. Returns `{ error: "Daily AI budget reached..." }` when tripped.
+- `config/llm_config.yaml` created.
+
+**Real LLM call test (step 4d) — verbatim response:**
+```
+Input: "TOTW OOP -- Wirtz gold under 63K on console, hold 1-2 weeks"
+Platform: console
+Model: claude-haiku-4-5-20251001
+Input tokens: 584 | Output tokens: 239 | Cost: $0.000445
+
+{
+  "verdict": "avoid",
+  "confidence": 85,
+  "reasoning": "Wirtz is currently in TOTS promo, meaning his gold card is already out of packs and likely at or near peak price for this cycle. A 1-2 week hold during active TOTS offers minimal upside—the card will only decline as TOTS progresses and supply increases through pack pulls of other TOTS cards. The trade thesis (OOP scarcity driving price) is already priced in.",
+  "price_context": "At 63K during TOTS, Wirtz gold is likely trading at or above his typical SBC fodder baseline. TOTS promos typically see gold cards depreciate as the promo extends and players chase TOTS pulls instead. No upcoming SBC spike is visible in the next 1-2 weeks to justify holding.",
+  "risk": "high",
+  "suggested_buy_price": null,
+  "suggested_sell_price": null,
+  "horizon": "medium (days)"
+}
+```
+Call logged to llm_calls (id=1). Daily cap enforcement verified: raises RuntimeError correctly.
+
+**Daily cap (step 4e):** Tested cap at $0.000001 — correctly rejected with RuntimeError "Daily AI budget reached ($0.00). Resets at midnight UTC." Restored to $0.50 in config.
+
+**Dashboard:** Ask view at top of sidebar (default landing). Fodder view between Top Movers and Signals. Both views render without errors (selftest exit 0, all IPC handlers registered).
+
+**Tests:** 89/89 passing (24 new tests: 5 fodder, 7 tagger, 12 LLM). Scheduler test updated to assert `fodder_sweep` and `signal_tagger` jobs registered.
+
+**Selftest:** exit 0. All new handlers (getFodderSummary, getFodderSnapshot, getLLMHistory, askLLM) visible in selftest output.
+
+**Gotcha: LLM returns markdown fences.** Claude Haiku 4.5 wraps JSON in ` ```json...``` ` despite the system prompt saying not to. Both Python `ask.py` and Node `askLLM` handler now strip fences before JSON.parse. This is documented in ARCHITECTURE.md.
+
+**Next:** Phase 2.4 remainder — football-data.org fixtures + fixture-to-signal job. Then Phase 2.6 exit criteria (48h smoke test, signal volume dashboard).
+
+**Changed files:**
+- `backend/src/db/migrations/0004_fodder.sql` (new)
+- `backend/src/llm/__init__.py` (new)
+- `backend/src/llm/context_builder.py` (new)
+- `backend/src/llm/ask.py` (new)
+- `backend/src/workers/signal_tagger.py` (new)
+- `backend/src/scrapers/futgg.py` (added fetch_fodder_cheapest, fodder_sweep, --fodder CLI)
+- `backend/src/workers/scheduler.py` (added fodder_sweep job, signal_tagger job)
+- `backend/pyproject.toml` (added rapidfuzz, anthropic deps)
+- `backend/tests/test_fodder_scraper.py` (new)
+- `backend/tests/test_signal_tagger.py` (new)
+- `backend/tests/test_llm_ask.py` (new)
+- `backend/tests/test_scheduler.py` (added fodder_sweep, signal_tagger to required job set)
+- `config/llm_config.yaml` (new)
+- `frontend/electron/db-queries.cjs` (added getFodderSummary, getFodderSnapshot, getLLMHistory)
+- `frontend/electron/main.cjs` (added askLLM handler + all LLM helpers + new IPC handlers)
+- `frontend/electron/preload.cjs` (exposed new IPC channels)
+- `frontend/src/electron.d.ts` (added new types to window.fcdb)
+- `frontend/src/lib/types.ts` (added FodderSummaryRow, FodderSnapshotRow, AskVerdict, AskResult, LLMHistoryRow)
+- `frontend/src/views/Fodder.tsx` (new)
+- `frontend/src/views/Ask.tsx` (new)
+- `frontend/src/App.tsx` (added Ask and Fodder nav items, Ask as default view)
+- `frontend/src/App.css` (added Fodder and Ask styles)
+- `ARCHITECTURE.md` (2026-04-25 decisions entry)
+- `ROADMAP.md` (Phase 2d tasks marked [x])
+
+---
+
+### 2026-04-24 — session 11
+**Goal:** Fix Reddit ingestion — bypass PRAW and Reddit's blocked API by switching to old.reddit.com JSON endpoint with browser-like headers.
+
+**Done:**
+- Discovered `https://www.reddit.com/r/fut/new.json` returns 403 (HTML body) but `https://old.reddit.com/r/fut/new.json` with Chrome User-Agent returns 200 JSON correctly.
+- Updated `reddit_ingest.py`: changed `_BASE` to `https://old.reddit.com`, replaced `_USER_AGENT` with Chrome browser string, added `Accept-Language` header to `_fetch_subreddit_posts`. Updated 403 error message to reflect the new access pattern. No PRAW involved — code was already httpx-only.
+- Added 2 new tests (`test_fetch_subreddit_posts_parses_json`, `test_fetch_subreddit_posts_inserts_signals`) that mock httpx, assert JSON parsing, and verify signals are written to DB with correct source/category.
+- Live verification: `_fetch_subreddit_posts("fut", "new", 5)` returned 3 posts with real FUT titles.
+- Full pytest: 65/65 passing.
+
+**Next:** Wire Reddit jobs into the running scheduler and do a live DB smoke test (run scheduler, wait for `reddit_new` to fire, confirm `SELECT COUNT(*) FROM signals WHERE source='reddit'` > 0). Then football-data.org fixtures (Phase 2.4 remainder).
+
+**Gotchas:**
+- `www.reddit.com/r/X/new.json` returns 403 for bot User-Agents (changed in 2023). `old.reddit.com` with a Chrome UA returns clean JSON — no OAuth needed. If Reddit blocks old.reddit.com too, the existing `RedditAuthError` handler will catch it and write a scraper_health failure row.
+- PRAW was never in `pyproject.toml` — the prior session had already switched to httpx. No dependency removal needed.
+
+**Changed files:**
+- `backend/src/workers/reddit_ingest.py` (`_BASE`, `_USER_AGENT`, headers in `_fetch_subreddit_posts`, 403 message)
+- `backend/tests/test_reddit_ingest.py` (2 new httpx-mock tests; added imports for `_fetch_subreddit_posts`, `json`, `patch`, `AsyncMock`, `MagicMock`)
+
+---
+
+### 2026-04-24 — session 10
+**Goal:** Phase 2c — Twitter/X, Reddit, and EA news ingestion.
+
+**Done:**
+
+**Migration 0003:** Applied cleanly. Added `signal_category TEXT` and `priority TEXT DEFAULT 'medium'` to `signals`; new `twitter_tweet_ids` and `reddit_post_ids` dedup tables. Verified all columns present in live DB.
+
+**Twitter worker (`backend/src/workers/twitter_ingest.py`):**
+- Polls `/home` (Following timeline) every 50 seconds via Playwright + playwright-stealth
+- `backend/src/utils/cookie_loader.py` parses Netscape-format cookie file; validates `auth_token` + `ct0` present; raises clear error if expired
+- Real cookie file found at project root as `x_com_cookies.txt` (13 cookies, auth_token + ct0 present). Copied to `data/.cookies/x_cookies.txt` (the canonical location)
+- Tweet parsing via stable selectors: `article[data-testid="tweet"]`, `[data-testid="User-Name"]`, `[data-testid="tweetText"]`, `time[datetime]`, `a[href*="/status/"]`
+- Schema-guard: WARNING after first empty poll, ERROR after 5 consecutive empty polls
+- Login detection (URL check), rate-limit detection (empty-state element — not body text, which caused false positives)
+- `BEGIN IMMEDIATE` dedup via `twitter_tweet_ids` (same pattern as Discord)
+- Signals stored with `source='twitter'`, `source_server=handle`, `signal_category`, `priority` from `config/twitter_accounts.yaml`
+- Spawned by `scripts/dev.ps1` (toggle `ENABLE_TWITTER_INGEST=false`) and `frontend/electron/main.cjs` (toggle `settings.enableTwitterIngest`)
+- `config/twitter_accounts.yaml` with 3 initial accounts: FutSheriff (leaks/high), FUT_Scoreboard (content_updates/high), FUTDonkey (leaks/medium)
+- `docs/twitter_sources.md` — full reference for DOM selectors, cookie refresh procedure, rate limit handling
+
+**Live smoke test (Twitter):** Worker started, 13 cookies loaded, 5 tweets ingested from Following timeline on first poll, health row written (success=1, records_written=5). Confirmed in DB: `SELECT COUNT(*) FROM signals WHERE source='twitter'` = 5.
+
+**EA news worker (`backend/src/workers/ea_ingest.py`):** Added as scheduler job (every 30 min). RSS-first (tries 2 EA RSS URL variants), falls back to httpx + selectolax HTML scrape. EA's news page is server-rendered — no Playwright needed. **Live smoke test:** 5 EA articles ingested (e.g. "EA SPORTS FC 26 - 2026 Apple TV Offer", "FC 26 Launch Update"), health row OK.
+
+**Reddit worker (`backend/src/workers/reddit_ingest.py`):** Implemented using Reddit's public JSON API (no credentials). **BLOCKED: Reddit returns 403 for all unauthenticated API requests** — Reddit blocked unauthenticated access in 2023. `RedditAuthError` raised immediately on 403; scraper_health now correctly reports failure (not success-with-0-records). **Owner action needed:** create a free "script" Reddit app at https://www.reddit.com/prefs/apps/, add `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` to `.env`, then ask Claude to update the worker to use PRAW.
+
+**Scheduler:** Added 3 new jobs to `build_scheduler()`: `reddit_new` (every 5 min), `reddit_hot` (every 30 min), `ea_news` (every 30 min). Scheduler test updated to assert the 6-job superset.
+
+**Dashboard (Signals view):** Source filter now includes Twitter, Reddit, EA News. Source icons ([TW], [DC], [RD], [EA]) shown on each signal card. `signal_category` and `priority` displayed as colored badges. Twitter signals show `@handle` prominently. `priority=high` signals get a red left border. `db-queries.cjs` fixed: removed hardcoded `WHERE source='discord'` filter — now shows all sources.
+
+**Tests:** 63/63 passing (28 new tests: 14 twitter, 8 reddit, 6 ea_news). All tests use `tempfile.NamedTemporaryFile` to avoid `tmp_path` PermissionError on Windows.
+
+**selftest:** exit 0. `getRecentSignals` now returns all sources (Discord + Twitter signals visible); `signal_category` and `priority` fields present in rows.
+
+**Next:** Reddit is blocked — owner needs to create a Reddit app (see ROADMAP 2.3). After that: wire Reddit with PRAW. Then Phase 2.4 fixtures (football-data.org), and Phase 2.5 "Ask" LLM feature.
+
+**Gotchas:**
+- **Twitter rate-limit detection:** Initial implementation checked `body.lower()` for "Rate limit" — false positive on first navigation (Twitter's normal page contains this string in JS bundles/UI). Fixed to check the specific `[data-testid="empty_state_body"]` element only.
+- **Reddit 403:** Reddit now blocks all unauthenticated API access. `.json` URL trick that worked pre-2023 is dead. Must use PRAW with OAuth credentials (free script app).
+- **`tmp_path` fixture PermissionError:** pytest's `tmp_path` (and `tmp_path_factory`) hits a Windows permissions issue on this machine (`C:\Users\khoba\AppData\Local\Temp\pytest-of-khoba`). All new tests use `tempfile.NamedTemporaryFile(delete=False)` with manual cleanup — same pattern as existing tests.
+- **Cookie file location:** Owner's cookie file was at project root as `x_com_cookies.txt` (visible in git status as untracked). Copied to `data/.cookies/x_cookies.txt` (the canonical path the worker expects). Both locations are gitignored.
+- **`signal_category` empty string in old Discord signals:** Discord signals pre-migration have `signal_category=''` (SQLite returns empty string for NULL with COALESCE). The UI handles this — empty category badge is simply not rendered.
+
+**Changed files:**
+- `config/twitter_accounts.yaml` (new)
+- `backend/src/db/migrations/0003_twitter_reddit_ea.sql` (new)
+- `backend/src/utils/__init__.py` (new)
+- `backend/src/utils/cookie_loader.py` (new)
+- `backend/src/workers/twitter_ingest.py` (new)
+- `backend/src/workers/reddit_ingest.py` (new)
+- `backend/src/workers/ea_ingest.py` (new)
+- `backend/src/workers/scheduler.py` (added reddit_new, reddit_hot, ea_news jobs)
+- `backend/tests/test_twitter_ingest.py` (new)
+- `backend/tests/test_reddit_ingest.py` (new)
+- `backend/tests/test_ea_ingest.py` (new)
+- `backend/tests/test_scheduler.py` (updated job count assertion)
+- `scripts/dev.ps1` (Twitter worker spawn + kill + ENABLE_TWITTER_INGEST toggle)
+- `frontend/electron/main.cjs` (startTwitterIngest/stopTwitterIngest, spawned on ready)
+- `frontend/electron/db-queries.cjs` (removed hardcoded `source='discord'` filter; added signal_category/priority to SELECT)
+- `frontend/src/lib/types.ts` (signal_category, priority on SignalRow; enableTwitterIngest on AppSettings)
+- `frontend/src/views/Signals.tsx` (source filter expanded; source icons; category/priority badges)
+- `frontend/src/App.css` (new badge + priority border CSS)
+- `docs/twitter_sources.md` (new)
+- `CLAUDE.md` (commands updated)
+- `ARCHITECTURE.md` (session 10 decisions)
+- `ROADMAP.md` (2.2 marked [x], 2.3 marked [!], 2.4 EA partial [x])
+
 ### 2026-04-20 — session 9
 **Goal:** Phase 2a bugfix — fix 4 bugs observed after first real Discord signals were ingested.
 

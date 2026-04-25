@@ -44,8 +44,9 @@ Write-Host "==> Starting FCPriceMaster dev environment..." -ForegroundColor Cyan
 # Ensure data/logs dir exists
 New-Item -ItemType Directory -Force -Path "$root\data\logs" | Out-Null
 
-# Toggle: set ENABLE_DISCORD_INGEST=false to skip Discord worker (useful for debugging without Discord)
-$enableDiscord = ($env:ENABLE_DISCORD_INGEST -ne "false")
+# Per-worker toggles: set to "false" to skip that worker.
+$enableDiscord  = ($env:ENABLE_DISCORD_INGEST  -ne "false")
+$enableTwitter  = ($env:ENABLE_TWITTER_INGEST  -ne "false")
 
 # Launch backend scheduler in a separate window, capturing PID for cleanup.
 $backendProc = Start-Process -FilePath "powershell" `
@@ -63,6 +64,17 @@ if ($enableDiscord) {
     Write-Host "==> Discord ingest PID: $($discordProc.Id)" -ForegroundColor Yellow
 } else {
     Write-Host "==> Discord ingest skipped (ENABLE_DISCORD_INGEST=false)" -ForegroundColor DarkGray
+}
+
+# Launch Twitter ingest worker (separate long-running Playwright process)
+$twitterProc = $null
+if ($enableTwitter) {
+    $twitterProc = Start-Process -FilePath "powershell" `
+        -ArgumentList "-NoExit", "-Command", "cd '$root\backend'; & '$uvExe' run python -m src.workers.twitter_ingest" `
+        -PassThru
+    Write-Host "==> Twitter ingest PID: $($twitterProc.Id)" -ForegroundColor Yellow
+} else {
+    Write-Host "==> Twitter ingest skipped (ENABLE_TWITTER_INGEST=false)" -ForegroundColor DarkGray
 }
 
 try {
@@ -84,6 +96,14 @@ try {
             Write-Host "==> Discord ingest stopped." -ForegroundColor Green
         } catch {
             Write-Host "==> Discord ingest already stopped." -ForegroundColor DarkGray
+        }
+    }
+    if ($twitterProc) {
+        try {
+            & taskkill /F /T /PID $twitterProc.Id 2>$null
+            Write-Host "==> Twitter ingest stopped." -ForegroundColor Green
+        } catch {
+            Write-Host "==> Twitter ingest already stopped." -ForegroundColor DarkGray
         }
     }
 }

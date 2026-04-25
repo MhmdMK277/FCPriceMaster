@@ -5,10 +5,12 @@ import { CardSearch } from './views/CardSearch';
 import { ScraperHealth } from './views/ScraperHealth';
 import { Signals } from './views/Signals';
 import { Settings } from './views/Settings';
+import { Fodder } from './views/Fodder';
+import { Ask } from './views/Ask';
 import { usePlatform } from './lib/usePlatform';
 import './App.css';
 
-type View = 'top-movers' | 'card-search' | 'scraper-health' | 'signals' | 'settings';
+type View = 'ask' | 'top-movers' | 'card-search' | 'fodder' | 'scraper-health' | 'signals' | 'settings';
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   constructor(props: { children: ReactNode }) {
@@ -34,7 +36,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
 }
 
 export default function App() {
-  const [view, setView] = useState<View>('top-movers');
+  const [view, setView] = useState<View>('ask');
   const { platform, setPlatform } = usePlatform();
 
   return (
@@ -44,10 +46,12 @@ export default function App() {
           <div className="logo">FCPriceMaster</div>
 
           <nav className="nav">
+            <NavItem label="Ask" active={view === 'ask'} onClick={() => setView('ask')} />
             <NavItem label="Top Movers" active={view === 'top-movers'} onClick={() => setView('top-movers')} />
             <NavItem label="Card Search" active={view === 'card-search'} onClick={() => setView('card-search')} />
-            <NavItem label="Scraper Health" active={view === 'scraper-health'} onClick={() => setView('scraper-health')} />
+            <NavItem label="Fodder" active={view === 'fodder'} onClick={() => setView('fodder')} />
             <NavItem label="Signals" active={view === 'signals'} onClick={() => setView('signals')} />
+            <NavItem label="Scraper Health" active={view === 'scraper-health'} onClick={() => setView('scraper-health')} />
             <NavItem label="Settings" active={view === 'settings'} onClick={() => setView('settings')} />
           </nav>
 
@@ -64,8 +68,10 @@ export default function App() {
         </aside>
 
         <main className="content">
+          {view === 'ask'            && <Ask platform={platform} setPlatform={setPlatform} />}
           {view === 'top-movers'     && <TopMovers platform={platform} />}
           {view === 'card-search'    && <CardSearch platform={platform} />}
+          {view === 'fodder'         && <Fodder platform={platform} />}
           {view === 'scraper-health' && <ScraperHealth />}
           {view === 'signals'        && <Signals />}
           {view === 'settings'       && <Settings />}

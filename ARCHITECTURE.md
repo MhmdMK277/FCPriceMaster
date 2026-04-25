@@ -205,6 +205,51 @@ would silently create a phantom DB in the wrong location.
 `load_token()` first tries standard dotenv parsing, then falls back to scanning the file for a
 line containing exactly "Token" followed by the token value on the next line.
 
+### 2026-04-25 — session 12 — Phase 2d: Fodder tracker, card tagger, Ask LLM
+
+**LLM model: claude-haiku-4-5-20251001.** Chosen for cost (~$0.00044/call at ~580 in / 240 out tokens) and speed. Temperature 0 for deterministic trade verdicts.
+
+**Daily LLM spend cap enforced in application layer (0.50 USD default) as secondary safety net.** Config in `config/llm_config.yaml`. Tracked via `llm_calls` table. Cap is checked before every call; error message displayed in UI if exceeded.
+
+**Fodder tracker polls FUT.GG cheapest-by-rating pages. Ratings 82-91.** URL: `?sort=cheapest&rating={N}`. 0-coin and <500-coin listings filtered as troll/extinct. Computes cheapest_bin, second_cheapest_bin, median_bin from first 5 valid prices. Runs every 30 min via scheduler. Both platforms swept sequentially (shared Playwright context).
+
+**Card tagger uses rapidfuzz fuzzy matching at 85% threshold against card_aliases table.** Aliases seeded automatically from cards.player_name (full name, parts ≥5 chars, plus hard-coded common nicknames). Runs every 5 min via scheduler; processes signals with tagged_at IS NULL.
+
+**Ask LLM feature is implemented in two places:** (1) Python `src/llm/ask.py` for standalone CLI testing/verification, (2) Electron main.cjs `db:askLLM` IPC handler for the UI (uses Node built-in fetch to call Anthropic API directly, no subprocess overhead). Both use the same system prompt and JSON verdict schema.
+
+**LLM response may include markdown fences despite system prompt instructions.** Both Python and Node implementations strip `\`\`\`json...\`\`\`` fences before JSON.parse. This is a known Haiku 4.5 behavior.
+
+### 2026-04-24 — session 10 — Phase 2c: Twitter, EA news, Reddit architecture
+
+**Twitter uses Following-timeline single-page polling for <60s latency, not per-profile navigation.**
+One navigation to `https://x.com/home` per 50s cycle covers all followed accounts simultaneously.
+Per-profile navigation would require 5-6 page loads per cycle. The throwaway account follows only
+the monitored leaker accounts, so the Following timeline is an exact filter.
+
+**Twitter is a standalone Playwright worker (not a scheduler job) due to persistent browser.**
+Like Discord, it maintains a long-lived process. Spawned by dev.ps1 and Electron main.cjs.
+Toggle: `ENABLE_TWITTER_INGEST` env var (default true). Cookie file must exist at
+`data/.cookies/x_cookies.txt` or the worker refuses to start.
+
+**Reddit and EA news run as scheduler jobs inside the existing scheduler process.**
+They're lightweight HTTP polling — no persistent connections. Added to `build_scheduler()` as
+`IntervalTrigger` jobs alongside the FUT.GG jobs.
+
+**Reddit JSON API returns 403 — credentials required.**
+Reddit blocked unauthenticated `.json` API access in 2023. Current code raises `RedditAuthError`
+immediately on 403 and writes a failure row to `scraper_health`. Reddit is blocked pending owner
+setting up a free script app and providing `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` in `.env`.
+
+**EA news uses RSS-first, HTML scrape fallback.**
+Tried `https://www.ea.com/games/ea-sports-fc/news/rss` (and en-gb variant) first;
+falls back to scraping the HTML news page with httpx + selectolax. EA's news page is
+server-rendered (not a SPA), so httpx + selectolax is sufficient — no Playwright needed.
+
+**`signal_category` and `priority` added to signals table (migration 0003).**
+These fields allow the LLM (Phase 2d) to understand the provenance and urgency of each signal.
+Both are populated at ingest time from `config/twitter_accounts.yaml` (for Twitter) or
+from flair/listing type (for Reddit) or hardcoded 'news'/'high' (for EA).
+
 ### 2026-04-19 — session 5 — scheduler design decisions
 
 **`AsyncIOScheduler` over `BackgroundScheduler`.**

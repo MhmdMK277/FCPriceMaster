@@ -1,13 +1,37 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { SignalRow } from '../lib/types';
 
-const SOURCE_OPTIONS = ['All sources', 'source_1', 'source_2', 'source_3', 'owner_direct'];
+const SOURCE_OPTIONS = [
+  { label: 'All sources', value: '' },
+  { label: 'Twitter',     value: 'twitter' },
+  { label: 'Discord',     value: 'discord' },
+  { label: 'Reddit',      value: 'reddit' },
+  { label: 'EA News',     value: 'ea_news' },
+  { label: 'source_1',    value: 'source_1' },
+  { label: 'source_2',    value: 'source_2' },
+  { label: 'source_3',    value: 'source_3' },
+  { label: 'owner_direct', value: 'owner_direct' },
+];
+
 const TIME_OPTIONS = [
-  { label: 'Last 1h',  hours: 1  },
-  { label: 'Last 6h',  hours: 6  },
-  { label: 'Last 24h', hours: 24 },
+  { label: 'Last 1h',  hours: 1   },
+  { label: 'Last 6h',  hours: 6   },
+  { label: 'Last 24h', hours: 24  },
   { label: 'Last 7d',  hours: 168 },
 ];
+
+const SOURCE_ICONS: Record<string, string> = {
+  twitter:    '[TW]',
+  discord:    '[DC]',
+  reddit:     '[RD]',
+  ea_news:    '[EA]',
+};
+
+const PRIORITY_COLORS: Record<string, string> = {
+  high:   'sig-priority-high',
+  medium: 'sig-priority-medium',
+  low:    'sig-priority-low',
+};
 
 function relativeTime(isoUtc: string): string {
   const diffMs = Date.now() - new Date(isoUtc + (isoUtc.endsWith('Z') ? '' : 'Z')).getTime();
@@ -21,13 +45,13 @@ function relativeTime(isoUtc: string): string {
 
 export function Signals() {
   const [rows, setRows] = useState<SignalRow[]>([]);
-  const [sourceFilter, setSourceFilter] = useState('All sources');
+  const [sourceFilter, setSourceFilter] = useState('');
   const [hoursBack, setHoursBack] = useState(24);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
 
   const load = useCallback(async () => {
-    const filter = sourceFilter === 'All sources' ? undefined : sourceFilter;
+    const filter = sourceFilter || undefined;
     const data = await window.fcdb.getRecentSignals({ limit: 200, hoursBack, sourceFilter: filter });
     setRows(data);
     setLastRefresh(new Date());
@@ -63,7 +87,7 @@ export function Signals() {
           onChange={e => setSourceFilter(e.target.value)}
         >
           {SOURCE_OPTIONS.map(s => (
-            <option key={s} value={s}>{s}</option>
+            <option key={s.value} value={s.value}>{s.label}</option>
           ))}
         </select>
 
@@ -82,7 +106,7 @@ export function Signals() {
 
       {rows.length === 0 ? (
         <div className="empty">
-          No signals in the selected window. Forward a trade call message to one of the source channels.
+          No signals in the selected window.
         </div>
       ) : (
         <div className="signal-list">
@@ -114,17 +138,31 @@ function SignalCard({
   const isLong = text.length > MAX_CHARS;
   const displayText = isExpanded || !isLong ? text : text.slice(0, MAX_CHARS) + '…';
   const timeStr = row.original_ts_utc || row.ts_utc;
+  const sourceIcon = SOURCE_ICONS[row.source] || `[${row.source.slice(0, 2).toUpperCase()}]`;
+  const priorityClass = PRIORITY_COLORS[row.priority] || '';
+
+  // For Twitter, show the handle (@source_server) prominently.
+  const displayName = row.source === 'twitter'
+    ? `@${row.source_server || 'unknown'}`
+    : (row.source_server || row.source);
 
   return (
-    <div className="signal-card">
+    <div className={`signal-card ${priorityClass}`}>
       <div className="signal-meta">
-        <span className="signal-source">{row.source_server || row.source}</span>
-        {row.original_author && (
+        <span className="signal-source-icon" title={row.source}>{sourceIcon}</span>
+        <span className="signal-source">{displayName}</span>
+        {row.original_author && row.source !== 'twitter' && (
           <span className="signal-author" title="Original author">{row.original_author}</span>
         )}
         <span className="signal-time" title={timeStr}>{relativeTime(timeStr)}</span>
         {row.has_attachments ? <span className="sig-badge">img</span> : null}
         {row.signal_type === 'forward' && <span className="sig-badge fwd">fwd</span>}
+        {row.signal_category && (
+          <span className="sig-badge cat">{row.signal_category}</span>
+        )}
+        {row.priority === 'high' && (
+          <span className="sig-badge high">high</span>
+        )}
       </div>
 
       <div className="signal-text">

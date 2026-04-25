@@ -13,6 +13,8 @@ dependencies = [
     "playwright-stealth>=2.0.3",
     "python-dotenv>=1.2.2",
     "discord-py>=2.4.0",
+    "rapidfuzz>=3.9",
+    "anthropic>=0.30",
 ]
 
 [project.optional-dependencies]

@@ -1,0 +1,270 @@
+"""
+Build structured context from the DB for LLM trade-call analysis.
+
+Given raw text + platform, returns a dict with:
+  - mentioned_cards: matched cards with price history
+  - fodder_context: current fodder prices for mentioned ratings
+  - release_calendar: promo proximity
+  - recent_signals: last 10 signals mentioning the same cards
+"""
+
+from __future__ import annotations
+
+import os
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+_DB_PATH = str(Path(__file__).parents[3] / "data" / "fcpricemaster.db")
+_CALENDAR_PATH = Path(__file__).parents[3] / "config" / "release_calendar.yaml"
+
+
+def _db_path_from_env() -> str:
+    return os.environ.get("DB_PATH", _DB_PATH)
+
+
+# ---------------------------------------------------------------------------
+# Card matching
+# ---------------------------------------------------------------------------
+
+def _match_cards(con: sqlite3.Connection, text: str) -> list[dict[str, Any]]:
+    """Return cards mentioned in text using aliases + fallback name substring."""
+    text_lower = text.lower()
+    matched: dict[int, dict[str, Any]] = {}
+
+    # Check card_aliases first (exact alias match)
+    aliases = con.execute(
+        "SELECT alias, card_id FROM card_aliases"
+    ).fetchall()
+    for alias, card_id in aliases:
+        if alias.lower() in text_lower and card_id not in matched:
+            row = con.execute(
+                "SELECT id, card_key, player_name, version_name FROM cards WHERE id=?",
+                (card_id,),
+            ).fetchone()
+            if row:
+                matched[card_id] = dict(zip(["id", "card_key", "player_name", "version_name"], row))
+
+    # Fallback: substring match on player_name (full name or any significant part)
+    cards = con.execute(
+        "SELECT id, card_key, player_name, version_name FROM cards"
+    ).fetchall()
+    for card_id, card_key, player_name, version_name in cards:
+        if card_id in matched:
+            continue
+        name_lower = player_name.lower()
+        # Full name match
+        if len(name_lower) >= 4 and name_lower in text_lower:
+            matched[card_id] = {
+                "id": card_id, "card_key": card_key,
+                "player_name": player_name, "version_name": version_name,
+            }
+            continue
+        # Individual word match (last name or first name, ≥5 chars to avoid collisions)
+        parts = name_lower.split()
+        for part in parts:
+            if len(part) >= 5 and part in text_lower:
+                matched[card_id] = {
+                    "id": card_id, "card_key": card_key,
+                    "player_name": player_name, "version_name": version_name,
+                }
+                break
+
+    return list(matched.values())
+
+
+# ---------------------------------------------------------------------------
+# Price context
+# ---------------------------------------------------------------------------
+
+def _price_context(con: sqlite3.Connection, card_id: int, platform: str) -> dict[str, Any]:
+    """Return current price, 24h ago price, 7d history summary."""
+    latest = con.execute(
+        """SELECT bin_price, ts_utc FROM price_snapshots
+           WHERE card_id=? AND platform=? AND bin_price IS NOT NULL
+           ORDER BY ts_utc DESC LIMIT 1""",
+        (card_id, platform),
+    ).fetchone()
+    prev_24h = con.execute(
+        """SELECT bin_price FROM price_snapshots
+           WHERE card_id=? AND platform=? AND bin_price IS NOT NULL
+             AND ts_utc <= datetime('now', '-24 hours')
+           ORDER BY ts_utc DESC LIMIT 1""",
+        (card_id, platform),
+    ).fetchone()
+    week = con.execute(
+        """SELECT MIN(bin_price), MAX(bin_price), COUNT(*) FROM price_snapshots
+           WHERE card_id=? AND platform=? AND bin_price IS NOT NULL
+             AND ts_utc >= datetime('now', '-7 days')""",
+        (card_id, platform),
+    ).fetchone()
+
+    current = latest[0] if latest else None
+    ago_24h = prev_24h[0] if prev_24h else None
+    change_24h = None
+    if current and ago_24h and ago_24h > 0:
+        change_24h = round((current - ago_24h) / ago_24h * 100, 1)
+
+    trend = "unknown"
+    if change_24h is not None:
+        if change_24h > 5:
+            trend = "rising"
+        elif change_24h < -5:
+            trend = "falling"
+        else:
+            trend = "stable"
+
+    return {
+        "current_price": current,
+        "price_24h_ago": ago_24h,
+        "change_24h_pct": change_24h,
+        "week_low": week[0] if week else None,
+        "week_high": week[1] if week else None,
+        "trend": trend,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Fodder context
+# ---------------------------------------------------------------------------
+
+def _fodder_context(con: sqlite3.Connection, text: str, platform: str) -> list[dict[str, Any]]:
+    """Return fodder snapshots for any ratings 82-91 mentioned in text."""
+    import re
+    rating_matches = re.findall(r"(?<!\d)(8[2-9]|9[01])(?!\d)", text)
+    ratings = list({int(r) for r in rating_matches})
+    results = []
+    for rating in sorted(ratings):
+        row = con.execute(
+            """SELECT cheapest_bin, second_cheapest_bin, median_bin, ts_utc
+               FROM fodder_snapshots
+               WHERE rating=? AND platform=? ORDER BY ts_utc DESC LIMIT 1""",
+            (rating, platform),
+        ).fetchone()
+        if row:
+            results.append({
+                "rating": rating,
+                "cheapest_bin": row[0],
+                "second_cheapest_bin": row[1],
+                "median_bin": row[2],
+                "last_updated": row[3],
+            })
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Release calendar
+# ---------------------------------------------------------------------------
+
+def _calendar_context() -> dict[str, Any]:
+    """Return current promo proximity from release_calendar.yaml."""
+    try:
+        with open(_CALENDAR_PATH, encoding="utf-8") as f:
+            cal = yaml.safe_load(f)
+    except OSError:
+        return {"today": datetime.now(timezone.utc).date().isoformat(), "promos": []}
+
+    today = datetime.now(timezone.utc).date()
+    today_mmdd = today.strftime("%m-%d")
+    promo_context = []
+    for promo in cal.get("promos", []):
+        window_start = promo.get("window_start", "")
+        window_end = promo.get("window_end", "")
+        name = promo.get("name", "")
+        if not window_start:
+            continue
+        # Build datetime for this year (or next year if window already passed)
+        year = today.year
+        try:
+            from datetime import date
+            start = date(year, int(window_start[:2]), int(window_start[3:]))
+            end = date(year, int(window_end[:2]), int(window_end[3:]))
+            if start < today and end < today:
+                # Check if it recurs next year
+                start = date(year + 1, int(window_start[:2]), int(window_start[3:]))
+                end = date(year + 1, int(window_end[:2]), int(window_end[3:]))
+            days_until = (start - today).days
+            in_window = start <= today <= end
+            promo_context.append({
+                "name": name,
+                "days_until_start": days_until if days_until >= 0 else None,
+                "in_window": in_window,
+                "window_start": str(start),
+                "window_end": str(end),
+            })
+        except (ValueError, TypeError):
+            continue
+
+    return {
+        "today": today.isoformat(),
+        "promos": sorted(
+            [p for p in promo_context if p["days_until_start"] is not None],
+            key=lambda p: p["days_until_start"],
+        )[:3],  # next 3 upcoming promos
+    }
+
+
+# ---------------------------------------------------------------------------
+# Recent signals
+# ---------------------------------------------------------------------------
+
+def _recent_signals(con: sqlite3.Connection, card_ids: list[int]) -> list[dict[str, Any]]:
+    """Return last 10 signals mentioning any of the given card IDs."""
+    if not card_ids:
+        rows = con.execute(
+            """SELECT raw_text, source, source_server, ts_utc
+               FROM signals WHERE raw_text IS NOT NULL
+               ORDER BY ts_utc DESC LIMIT 10"""
+        ).fetchall()
+    else:
+        placeholders = ",".join("?" * len(card_ids))
+        rows = con.execute(
+            f"""SELECT DISTINCT s.raw_text, s.source, s.source_server, s.ts_utc
+                FROM signals s
+                JOIN signal_card_tags t ON t.signal_id = s.id
+                WHERE t.card_id IN ({placeholders}) AND s.raw_text IS NOT NULL
+                ORDER BY s.ts_utc DESC LIMIT 10""",
+            card_ids,
+        ).fetchall()
+    return [
+        {"text": r[0], "source": r[1], "server": r[2], "ts_utc": r[3]}
+        for r in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Main builder
+# ---------------------------------------------------------------------------
+
+def build_context(text: str, platform: str, db_path: str | None = None) -> dict[str, Any]:
+    """Build full context for the LLM from the DB."""
+    path = db_path or _db_path_from_env()
+    con = sqlite3.connect(path)
+    con.row_factory = sqlite3.Row
+
+    try:
+        matched = _match_cards(con, text)
+        card_ids = [c["id"] for c in matched]
+
+        # Enrich each card with price data
+        enriched_cards = []
+        for card in matched:
+            attrs = con.execute(
+                "SELECT key, value FROM card_attributes WHERE card_id=?", (card["id"],)
+            ).fetchall()
+            attr_dict = {r[0]: r[1] for r in attrs}
+            prices = _price_context(con, card["id"], platform)
+            enriched_cards.append({**card, **attr_dict, **prices})
+
+        return {
+            "mentioned_cards": enriched_cards,
+            "fodder_context": _fodder_context(con, text, platform),
+            "release_calendar": _calendar_context(),
+            "recent_signals": _recent_signals(con, card_ids),
+            "platform": platform,
+        }
+    finally:
+        con.close()

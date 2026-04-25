@@ -26,6 +26,9 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from src.db.migrate import run_migrations
 from src.scrapers.futgg import FutGGScraper
+from src.workers.reddit_ingest import job_reddit_new, job_reddit_hot
+from src.workers.ea_ingest import job_ea_news
+from src.workers.signal_tagger import job_signal_tagger
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -84,6 +87,22 @@ async def job_trending(scraper: FutGGScraper, platform: str) -> None:
             platform, elapsed, type(exc).__name__, exc,
         )
         # DO NOT re-raise — job exceptions must never kill the scheduler
+
+
+async def job_fodder_sweep(scraper: FutGGScraper, db_path: str) -> None:  # noqa: ARG001
+    """Sweep fodder prices for ratings 82-91 on both platforms."""
+    start = datetime.now(timezone.utc)
+    logger.info("JOB START  fodder_sweep")
+    try:
+        total = await scraper.fodder_sweep(
+            ratings=list(range(82, 92)),
+            platforms=["pc", "console"],
+        )
+        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+        logger.info("JOB DONE   fodder_sweep — %d snapshots in %.1fs", total, elapsed)
+    except Exception as exc:
+        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+        logger.error("JOB FAILED fodder_sweep after %.1fs — %s: %s", elapsed, type(exc).__name__, exc)
 
 
 async def job_prune_health(db_path: str) -> None:
@@ -155,6 +174,66 @@ def build_scheduler(
         id="scraper_health_prune",
         name="Scraper health prune",
         misfire_grace_time=3600,
+        coalesce=True,
+        max_instances=1,
+    )
+
+    scheduler.add_job(
+        job_reddit_new,
+        trigger=IntervalTrigger(minutes=5, timezone="UTC"),
+        args=[db_path],
+        id="reddit_new",
+        name="Reddit /new posts",
+        next_run_time=now + timedelta(seconds=120),
+        misfire_grace_time=300,
+        coalesce=True,
+        max_instances=1,
+    )
+
+    scheduler.add_job(
+        job_reddit_hot,
+        trigger=IntervalTrigger(minutes=30, timezone="UTC"),
+        args=[db_path],
+        id="reddit_hot",
+        name="Reddit /hot posts",
+        next_run_time=now + timedelta(seconds=150),
+        misfire_grace_time=300,
+        coalesce=True,
+        max_instances=1,
+    )
+
+    scheduler.add_job(
+        job_ea_news,
+        trigger=IntervalTrigger(minutes=30, timezone="UTC"),
+        args=[db_path],
+        id="ea_news",
+        name="EA FC news",
+        next_run_time=now + timedelta(seconds=180),
+        misfire_grace_time=600,
+        coalesce=True,
+        max_instances=1,
+    )
+
+    scheduler.add_job(
+        job_fodder_sweep,
+        trigger=IntervalTrigger(minutes=30, timezone="UTC"),
+        args=[scraper, db_path],
+        id="fodder_sweep",
+        name="Fodder price sweep",
+        next_run_time=now + timedelta(seconds=240),
+        misfire_grace_time=600,
+        coalesce=True,
+        max_instances=1,
+    )
+
+    scheduler.add_job(
+        job_signal_tagger,
+        trigger=IntervalTrigger(minutes=5, timezone="UTC"),
+        args=[db_path],
+        id="signal_tagger",
+        name="Signal card tagger",
+        next_run_time=now + timedelta(seconds=60),
+        misfire_grace_time=300,
         coalesce=True,
         max_instances=1,
     )

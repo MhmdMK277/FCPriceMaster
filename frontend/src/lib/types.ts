@@ -64,6 +64,7 @@ export interface ScraperHealthRow {
 export interface AppSettings {
   autoStartBackend: boolean;
   enableDiscordIngest: boolean;
+  enableTwitterIngest: boolean;
 }
 
 export interface SignalRow {
@@ -77,4 +78,61 @@ export interface SignalRow {
   raw_text: string | null;
   has_attachments: number;
   attachment_urls: string[];
+  signal_category: string;
+  priority: string;
+}
+
+export interface FodderSummaryRow {
+  rating: number;
+  cheapest_bin: number | null;
+  median_bin: number | null;
+  last_updated: string | null;
+  cheapest_bin_24h_ago: number | null;
+}
+
+export interface FodderSnapshotRow {
+  rating: number;
+  platform: string;
+  ts_utc: string;
+  cheapest_bin: number | null;
+  second_cheapest_bin: number | null;
+  median_bin: number | null;
+}
+
+export interface AskVerdict {
+  verdict: 'buy' | 'hold' | 'avoid';
+  confidence: number;
+  reasoning: string;
+  price_context: string;
+  risk: 'low' | 'medium' | 'high';
+  suggested_buy_price: number | null;
+  suggested_sell_price: number | null;
+  horizon: string;
+}
+
+export interface AskResult {
+  verdict: AskVerdict;
+  context_used: {
+    cards: string[];
+    fodder_ratings: number[];
+    signals_count: number;
+  };
+  usage: {
+    model: string;
+    input_tokens: number;
+    output_tokens: number;
+  };
+  error?: string;
+}
+
+export interface LLMHistoryRow {
+  id: number;
+  ts_utc: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+  feature: string;
+  input_text: string | null;
+  output_json: string | null;
 }

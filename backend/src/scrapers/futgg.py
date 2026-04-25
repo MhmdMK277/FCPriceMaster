@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 
 Platform = Literal["pc", "console"]
 
+_FODDER_SOURCE = "futgg_fodder"
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -241,6 +243,114 @@ class FutGGScraper(PlaywrightScraperBase):
         finally:
             await page.close()
 
+    # ------------------------------------------------------------------
+    # Fodder tracking
+    # ------------------------------------------------------------------
+
+    async def fetch_fodder_cheapest(self, rating: int, platform: Platform) -> dict[str, Any] | None:
+        """
+        Navigate to the cheapest-by-rating FUT.GG list, collect the 5 cheapest
+        non-troll BIN prices, compute cheapest/second_cheapest/median, and
+        persist to fodder_snapshots.
+
+        Returns the snapshot dict, or None if not enough valid prices were found.
+        """
+        url = f"https://www.fut.gg/players/?sort=cheapest&rating={rating}"
+        page = await self._new_page()
+        try:
+            await self._navigate(page, url)
+            try:
+                await page.wait_for_selector('a[href*="/players/"][href*="/26-"]', timeout=45000)
+            except Exception:
+                pass
+            await self._set_platform(page, platform)
+
+            anchors = page.locator('a[href*="/players/"][href*="/26-"]')
+            count = await anchors.count()
+            count = min(count, 20)  # look at first 20 to find 5 valid
+
+            raw_prices: list[int] = []
+            for i in range(count):
+                anchor = anchors.nth(i)
+                badge_el = anchor.locator(".font-din").first
+                if await badge_el.count() == 0:
+                    continue
+                badge_text = await badge_el.inner_text()
+                _, _, price = _parse_badge(badge_text)
+                if price is not None and price >= 500:
+                    raw_prices.append(price)
+                if len(raw_prices) >= 5:
+                    break
+
+            if not raw_prices:
+                logger.warning(
+                    "fetch_fodder_cheapest(rating=%d, platform=%s): no valid prices found",
+                    rating, platform,
+                )
+                _write_health(
+                    self.db_path, _FODDER_SOURCE, success=False,
+                    error_text=f"No valid prices for rating={rating} platform={platform}",
+                )
+                return None
+
+            raw_prices.sort()
+            cheapest = raw_prices[0]
+            second_cheapest = raw_prices[1] if len(raw_prices) > 1 else None
+            median = raw_prices[len(raw_prices) // 2]
+
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            con = sqlite3.connect(self.db_path)
+            with con:
+                con.execute(
+                    """INSERT INTO fodder_snapshots
+                       (rating, platform, ts_utc, cheapest_bin, second_cheapest_bin, median_bin, game_edition)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    (rating, platform, ts, cheapest, second_cheapest, median, "fc26"),
+                )
+            _write_health(self.db_path, _FODDER_SOURCE, success=True, records_written=1)
+            logger.info(
+                "fodder snapshot: rating=%d platform=%s cheapest=%d median=%d",
+                rating, platform, cheapest, median,
+            )
+            return {
+                "rating": rating,
+                "platform": platform,
+                "cheapest_bin": cheapest,
+                "second_cheapest_bin": second_cheapest,
+                "median_bin": median,
+                "ts_utc": ts,
+            }
+
+        except Exception as exc:
+            _write_health(self.db_path, _FODDER_SOURCE, success=False, error_text=str(exc))
+            raise
+        finally:
+            await page.close()
+
+    async def fodder_sweep(
+        self,
+        ratings: list[int] | None = None,
+        platforms: list[Platform] | None = None,
+    ) -> int:
+        """
+        Sweep all rating+platform combos sequentially (one shared Playwright context).
+        Returns total rows inserted.
+        """
+        ratings = ratings or list(range(82, 92))
+        platforms = platforms or ["pc", "console"]
+        total = 0
+        for plat in platforms:
+            for rating in ratings:
+                try:
+                    result = await self.fetch_fodder_cheapest(rating, plat)
+                    if result:
+                        total += 1
+                except Exception as exc:
+                    logger.error(
+                        "fodder_sweep failed for rating=%d platform=%s: %s", rating, plat, exc
+                    )
+        return total
+
     async def fetch_card_prices(self, card_key: str, platform: Platform) -> dict[str, Any] | None:
         """
         Navigate the card's detail page, switch to the requested platform,
@@ -323,6 +433,7 @@ async def _main() -> None:
     parser.add_argument("--once", action="store_true", required=True)
     parser.add_argument("--platform", choices=["pc", "console"], default="console")
     parser.add_argument("--limit", type=int, default=10)
+    parser.add_argument("--fodder", action="store_true", help="Run fodder sweep instead of trending")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -337,6 +448,28 @@ async def _main() -> None:
     run_migrations(db_path)
 
     async with FutGGScraper(db_path=db_path) as scraper:
+        if args.fodder:
+            print(f"Running fodder sweep — platform={args.platform}, ratings 82-91")
+            total = await scraper.fodder_sweep(
+                ratings=list(range(82, 92)),
+                platforms=[args.platform],
+            )
+            print(f"Fodder snapshots inserted: {total}")
+            import sqlite3 as _sq
+            con = _sq.connect(db_path)
+            rows = con.execute(
+                """SELECT rating, cheapest_bin, second_cheapest_bin, median_bin, ts_utc
+                   FROM fodder_snapshots WHERE platform=?
+                   ORDER BY rating""",
+                (args.platform,),
+            ).fetchall()
+            con.close()
+            print(f"\nFodder table (platform={args.platform}):")
+            print(f"  {'Rating':<8} {'Cheapest':<12} {'2nd':<12} {'Median':<12} {'Updated'}")
+            for r in rows:
+                print(f"  {r[0]:<8} {(r[1] or 0):>10,}  {(r[2] or 0):>10,}  {(r[3] or 0):>10,}  {r[4]}")
+            return
+
         print(f"Scraping trending cards — platform={args.platform}, limit={args.limit}")
         cards = await scraper.fetch_hot_cards(platform=args.platform, limit=args.limit)
         print(f"Cards fetched: {len(cards)}")

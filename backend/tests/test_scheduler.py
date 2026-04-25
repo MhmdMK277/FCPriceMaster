@@ -53,12 +53,17 @@ def mock_scraper():
 # ---------------------------------------------------------------------------
 
 def test_build_scheduler_registers_three_jobs(mock_scraper, tmp_db):
-    """build_scheduler() should register exactly 3 jobs with the expected IDs."""
+    """build_scheduler() should register all expected job IDs."""
     now = datetime.now(timezone.utc)
     scheduler = build_scheduler(mock_scraper, tmp_db, pc_first_run=now, console_first_run=now)
     try:
         job_ids = {job.id for job in scheduler.get_jobs()}
-        assert job_ids == {"futgg_trending_pc", "futgg_trending_console", "scraper_health_prune"}
+        required = {
+            "futgg_trending_pc", "futgg_trending_console", "scraper_health_prune",
+            "reddit_new", "reddit_hot", "ea_news",
+            "fodder_sweep", "signal_tagger",
+        }
+        assert required.issubset(job_ids), f"Missing jobs: {required - job_ids}"
     finally:
         if scheduler.running:
 

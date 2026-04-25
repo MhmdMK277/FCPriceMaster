@@ -80,11 +80,12 @@ const RECENT_SIGNALS_SQL = `
   SELECT
     s.id, s.source, s.source_server, s.signal_type,
     s.ts_utc, s.original_author, s.original_ts_utc,
-    s.raw_text, s.has_attachments
+    s.raw_text, s.has_attachments,
+    COALESCE(s.signal_category, '') AS signal_category,
+    COALESCE(s.priority, 'medium')  AS priority
   FROM signals s
-  WHERE s.source = 'discord'
-    AND s.ts_utc >= datetime('now', ? || ' hours')
-    AND (? IS NULL OR s.source_server = ?)
+  WHERE s.ts_utc >= datetime('now', ? || ' hours')
+    AND (? IS NULL OR s.source = ? OR s.source_server = ?)
   ORDER BY s.ts_utc DESC
   LIMIT ?`;
 
@@ -93,7 +94,8 @@ const SIGNAL_ATTACHMENTS_SQL = `
 
 function getRecentSignals(db, { limit = 100, hoursBack = 24, sourceFilter = null } = {}) {
   const hoursStr = `-${Math.abs(parseInt(hoursBack, 10))}`;
-  const rows = db.prepare(RECENT_SIGNALS_SQL).all(hoursStr, sourceFilter, sourceFilter, limit);
+  // sourceFilter matches against both source column (e.g. 'twitter') and source_server
+  const rows = db.prepare(RECENT_SIGNALS_SQL).all(hoursStr, sourceFilter, sourceFilter, sourceFilter, limit);
   return rows.map(row => ({
     ...row,
     attachment_urls: row.has_attachments
@@ -102,4 +104,67 @@ function getRecentSignals(db, { limit = 100, hoursBack = 24, sourceFilter = null
   }));
 }
 
-module.exports = { getTopMovers, searchCards, getCardDetail, getScraperHealth, getRecentSignals };
+// ---------------------------------------------------------------------------
+// Fodder queries
+// ---------------------------------------------------------------------------
+
+const FODDER_SUMMARY_SQL = `
+  WITH latest AS (
+    SELECT rating, cheapest_bin, median_bin, ts_utc,
+      ROW_NUMBER() OVER (PARTITION BY rating ORDER BY ts_utc DESC) AS rn
+    FROM fodder_snapshots
+    WHERE platform = ?
+  ),
+  prev_24h AS (
+    SELECT rating, cheapest_bin,
+      ROW_NUMBER() OVER (PARTITION BY rating ORDER BY ts_utc DESC) AS rn
+    FROM fodder_snapshots
+    WHERE platform = ? AND ts_utc <= datetime('now', '-24 hours')
+  )
+  SELECT l.rating, l.cheapest_bin, l.median_bin, l.ts_utc AS last_updated,
+    p.cheapest_bin AS cheapest_bin_24h_ago
+  FROM latest l
+  LEFT JOIN prev_24h p ON l.rating = p.rating AND p.rn = 1
+  WHERE l.rn = 1
+  ORDER BY l.rating`;
+
+const FODDER_SNAPSHOT_SQL = `
+  SELECT rating, platform, ts_utc, cheapest_bin, second_cheapest_bin, median_bin
+  FROM fodder_snapshots
+  WHERE rating = ? AND platform = ? AND ts_utc >= datetime('now', ? || ' hours')
+  ORDER BY ts_utc ASC`;
+
+function getFodderSummary(db, { platform } = {}) {
+  try {
+    return db.prepare(FODDER_SUMMARY_SQL).all(platform, platform);
+  } catch { return []; }
+}
+
+function getFodderSnapshot(db, { rating, platform, hoursBack = 168 } = {}) {
+  const hoursStr = `-${Math.abs(parseInt(hoursBack, 10))}`;
+  try {
+    return db.prepare(FODDER_SNAPSHOT_SQL).all(rating, platform, hoursStr);
+  } catch { return []; }
+}
+
+// ---------------------------------------------------------------------------
+// LLM history query
+// ---------------------------------------------------------------------------
+
+const LLM_HISTORY_SQL = `
+  SELECT id, ts_utc, model, input_tokens, output_tokens, cost_usd, feature, input_text, output_json
+  FROM llm_calls
+  WHERE ts_utc >= datetime('now', '-1 day')
+  ORDER BY ts_utc DESC
+  LIMIT ?`;
+
+function getLLMHistory(db, { limit = 10 } = {}) {
+  try {
+    return db.prepare(LLM_HISTORY_SQL).all(limit);
+  } catch { return []; }
+}
+
+module.exports = {
+  getTopMovers, searchCards, getCardDetail, getScraperHealth, getRecentSignals,
+  getFodderSummary, getFodderSnapshot, getLLMHistory,
+};
