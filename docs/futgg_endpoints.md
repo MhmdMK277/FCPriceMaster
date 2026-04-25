@@ -127,6 +127,35 @@ Single shared browser context (looks like one long user session to the site).
 
 ---
 
+## Fodder cheapest-by-rating endpoint
+
+**Updated 2026-04-25 (session 16)**
+
+### Per-rating players list (CORRECT approach)
+
+```
+URL: https://www.fut.gg/players/?overall__gte={N}&overall__lte={N}&sorts=current_price&platform={pc|console}
+Example (89-rated, PC): https://www.fut.gg/players/?overall__gte=89&overall__lte=89&sorts=current_price&platform=pc
+```
+
+- `overall__gte` + `overall__lte` pins an exact rating (e.g. both = 89 → only 89-rated cards)
+- `sorts=current_price` orders cheapest-first
+- `&platform=pc` or `&platform=console` switches platform via URL param (no Radix dropdown needed)
+
+**Verified 2026-04-25**: produces correct cheapest prices per rating (82→400 coins, 89→3300 coins, 90→5400 coins PC).
+
+Previous broken URL used `?sort=cheapest&rating={N}` which FUT.GG ignored — always returned highest-rated TOTS cards (~38K+) for every rating.
+
+### /cheapest-by-rating/ page
+
+```
+URL: https://www.fut.gg/cheapest-by-rating/?platform={pc|console}
+```
+
+This page shows a summary of cheapest cards per rating, but its DOM structure differs from the `/players/` list page — the `a[href*="/players/"][href*="/26-"]` selector does not return card anchors on this page. Per-rating fetches using the correct URL above are used as the primary strategy.
+
+---
+
 ## Known limitations
 
 - Trending page shows ~30 cards per load. For 500-card coverage, pagination

@@ -134,6 +134,25 @@ const FODDER_SNAPSHOT_SQL = `
   WHERE rating = ? AND platform = ? AND ts_utc >= datetime('now', ? || ' hours')
   ORDER BY ts_utc ASC`;
 
+const FODDER_BY_RATING_SQL = `
+  SELECT fc.id, fc.card_key, fc.player_name, fc.rating, fc.position,
+         fc.club_name, fc.nation_name, fc.club_badge_url, fc.nation_flag_url,
+         fc.card_version, fc.bin_price, fc.rank_in_rating, fc.ts_utc, fc.platform
+  FROM fodder_cards fc
+  WHERE fc.snapshot_id = (
+    SELECT id FROM fodder_snapshots
+    WHERE rating = ? AND platform = ?
+    ORDER BY ts_utc DESC LIMIT 1
+  )
+  ORDER BY fc.rank_in_rating ASC
+  LIMIT ?`;
+
+const FODDER_HISTORY_SQL = `
+  SELECT rating, platform, ts_utc, cheapest_bin, second_cheapest_bin, median_bin
+  FROM fodder_snapshots
+  WHERE rating = ? AND platform = ? AND ts_utc >= datetime('now', ? || ' hours')
+  ORDER BY ts_utc ASC`;
+
 function getFodderSummary(db, { platform } = {}) {
   try {
     return db.prepare(FODDER_SUMMARY_SQL).all(platform, platform);
@@ -144,6 +163,19 @@ function getFodderSnapshot(db, { rating, platform, hoursBack = 168 } = {}) {
   const hoursStr = `-${Math.abs(parseInt(hoursBack, 10))}`;
   try {
     return db.prepare(FODDER_SNAPSHOT_SQL).all(rating, platform, hoursStr);
+  } catch { return []; }
+}
+
+function getFodderByRating(db, { rating, platform, limit = 10 } = {}) {
+  try {
+    return db.prepare(FODDER_BY_RATING_SQL).all(rating, platform, limit);
+  } catch { return []; }
+}
+
+function getFodderHistory(db, { rating, platform, hoursBack = 168 } = {}) {
+  const hoursStr = `-${Math.abs(parseInt(hoursBack, 10))}`;
+  try {
+    return db.prepare(FODDER_HISTORY_SQL).all(rating, platform, hoursStr);
   } catch { return []; }
 }
 
@@ -166,5 +198,5 @@ function getLLMHistory(db, { limit = 10 } = {}) {
 
 module.exports = {
   getTopMovers, searchCards, getCardDetail, getScraperHealth, getRecentSignals,
-  getFodderSummary, getFodderSnapshot, getLLMHistory,
+  getFodderSummary, getFodderSnapshot, getFodderByRating, getFodderHistory, getLLMHistory,
 };

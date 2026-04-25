@@ -249,40 +249,102 @@ class FutGGScraper(PlaywrightScraperBase):
 
     async def fetch_fodder_cheapest(self, rating: int, platform: Platform) -> dict[str, Any] | None:
         """
-        Navigate to the cheapest-by-rating FUT.GG list, collect the 5 cheapest
-        non-troll BIN prices, compute cheapest/second_cheapest/median, and
-        persist to fodder_snapshots.
+        Navigate to the cheapest-by-rating FUT.GG list, collect the top 10 cheapest
+        non-zero-price cards, store per-card rows in fodder_cards, and store
+        aggregate (cheapest/second_cheapest/median) in fodder_snapshots.
 
-        Returns the snapshot dict, or None if not enough valid prices were found.
+        Platform is passed as a URL parameter — avoids the Radix dropdown which
+        times out on /players/?sort=cheapest pages.
+
+        Only cards with price == 0 (extinct/delisted) are excluded.  All other
+        cards regardless of version/rarity are valid fodder data.
+
+        Returns the snapshot dict (including `cards` list), or None if no valid
+        cards were found.
         """
-        url = f"https://www.fut.gg/players/?sort=cheapest&rating={rating}"
+        plat_param = "pc" if platform == "pc" else "console"
+        # Use overall__gte/lte to pin exact rating; sorts=current_price gives cheapest-first order.
+        # The &platform= URL param avoids the Radix dropdown click entirely.
+        url = (
+            f"https://www.fut.gg/players/"
+            f"?overall__gte={rating}&overall__lte={rating}"
+            f"&sorts=current_price&platform={plat_param}"
+        )
         page = await self._new_page()
         try:
             await self._navigate(page, url)
             try:
-                await page.wait_for_selector('a[href*="/players/"][href*="/26-"]', timeout=45000)
+                await page.wait_for_selector('a[href*="/players/"][href*="/26-"]', timeout=60000)
             except Exception:
                 pass
-            await self._set_platform(page, platform)
 
             anchors = page.locator('a[href*="/players/"][href*="/26-"]')
             count = await anchors.count()
-            count = min(count, 20)  # look at first 20 to find 5 valid
+            count = min(count, 30)  # examine up to 30 to collect 10 valid
 
-            raw_prices: list[int] = []
+            cards: list[dict[str, Any]] = []
             for i in range(count):
                 anchor = anchors.nth(i)
+
+                # Badge text → position, rating, price
                 badge_el = anchor.locator(".font-din").first
                 if await badge_el.count() == 0:
                     continue
                 badge_text = await badge_el.inner_text()
-                _, _, price = _parse_badge(badge_text)
-                if price is not None and price >= 500:
-                    raw_prices.append(price)
-                if len(raw_prices) >= 5:
+                position, card_rating_f, price = _parse_badge(badge_text)
+                if price is None:  # 0-coin / extinct / missing — skip
+                    continue
+
+                # href → card_key
+                href = await anchor.get_attribute("href") or ""
+                card_key = _card_key_from_href(href) or ""
+
+                # Card art img alt → player name, card version
+                card_imgs = anchor.locator("img")
+                player_name = ""
+                card_version = ""
+                img_count = await card_imgs.count()
+                for j in range(img_count):
+                    alt = await card_imgs.nth(j).get_attribute("alt") or ""
+                    # FUT.GG alt format: "Wirtz - 89 - Normal" or "Reus - 93 - TOTS HM"
+                    if " - " in alt and any(c.isdigit() for c in alt):
+                        player_name, card_version = _player_name_from_alt(alt)
+                        break
+
+                # Club badge: img whose src contains 'club'
+                club_badge_url = ""
+                club_name = ""
+                club_img = anchor.locator("img[src*='club']").first
+                if await club_img.count() > 0:
+                    club_badge_url = await club_img.get_attribute("src") or ""
+                    club_name = await club_img.get_attribute("alt") or ""
+
+                # Nation flag: img whose src contains 'nation' or 'flag'
+                nation_flag_url = ""
+                nation_name = ""
+                nation_img = anchor.locator("img[src*='nation'], img[src*='flag']").first
+                if await nation_img.count() > 0:
+                    nation_flag_url = await nation_img.get_attribute("src") or ""
+                    nation_name = await nation_img.get_attribute("alt") or ""
+
+                card_rating = int(card_rating_f) if card_rating_f is not None else rating
+
+                cards.append({
+                    "card_key": card_key,
+                    "player_name": player_name,
+                    "rating": card_rating,
+                    "position": position,
+                    "club_name": club_name,
+                    "nation_name": nation_name,
+                    "club_badge_url": club_badge_url,
+                    "nation_flag_url": nation_flag_url,
+                    "card_version": card_version,
+                    "bin_price": price,
+                })
+                if len(cards) >= 10:
                     break
 
-            if not raw_prices:
+            if not cards:
                 logger.warning(
                     "fetch_fodder_cheapest(rating=%d, platform=%s): no valid prices found",
                     rating, platform,
@@ -293,24 +355,40 @@ class FutGGScraper(PlaywrightScraperBase):
                 )
                 return None
 
-            raw_prices.sort()
-            cheapest = raw_prices[0]
-            second_cheapest = raw_prices[1] if len(raw_prices) > 1 else None
-            median = raw_prices[len(raw_prices) // 2]
+            prices_sorted = sorted(c["bin_price"] for c in cards)
+            cheapest = prices_sorted[0]
+            second_cheapest = prices_sorted[1] if len(prices_sorted) > 1 else None
+            median = prices_sorted[len(prices_sorted) // 2]
 
             ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             con = sqlite3.connect(self.db_path)
             with con:
-                con.execute(
+                cur = con.execute(
                     """INSERT INTO fodder_snapshots
                        (rating, platform, ts_utc, cheapest_bin, second_cheapest_bin, median_bin, game_edition)
                        VALUES (?,?,?,?,?,?,?)""",
                     (rating, platform, ts, cheapest, second_cheapest, median, "fc26"),
                 )
-            _write_health(self.db_path, _FODDER_SOURCE, success=True, records_written=1)
+                snapshot_id = cur.lastrowid
+                for rank, card in enumerate(cards, start=1):
+                    con.execute(
+                        """INSERT INTO fodder_cards
+                           (snapshot_id, card_key, player_name, rating, position,
+                            club_name, nation_name, club_badge_url, nation_flag_url,
+                            card_version, bin_price, rank_in_rating, ts_utc, platform, game_edition)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            snapshot_id, card["card_key"], card["player_name"], card["rating"],
+                            card["position"], card["club_name"], card["nation_name"],
+                            card["club_badge_url"], card["nation_flag_url"], card["card_version"],
+                            card["bin_price"], rank, ts, platform, "fc26",
+                        ),
+                    )
+
+            _write_health(self.db_path, _FODDER_SOURCE, success=True, records_written=len(cards))
             logger.info(
-                "fodder snapshot: rating=%d platform=%s cheapest=%d median=%d",
-                rating, platform, cheapest, median,
+                "fodder snapshot: rating=%d platform=%s cheapest=%d median=%d cards=%d",
+                rating, platform, cheapest, median, len(cards),
             )
             return {
                 "rating": rating,
@@ -319,7 +397,161 @@ class FutGGScraper(PlaywrightScraperBase):
                 "second_cheapest_bin": second_cheapest,
                 "median_bin": median,
                 "ts_utc": ts,
+                "cards": cards,
             }
+
+        except Exception as exc:
+            _write_health(self.db_path, _FODDER_SOURCE, success=False, error_text=str(exc))
+            raise
+        finally:
+            await page.close()
+
+    async def fetch_fodder_all_ratings(
+        self,
+        platform: Platform,
+        ratings: list[int] | None = None,
+    ) -> dict[int, dict[str, Any]]:
+        """
+        Navigate to https://www.fut.gg/cheapest-by-rating/ once and extract cheapest
+        cards for every rating section visible on the page.  One page load per platform
+        instead of 13.
+
+        Returns {rating: snapshot_dict} for every rating that yielded at least one card.
+        Falls back to fetch_fodder_cheapest per-rating on any unrecoverable error.
+        """
+        ratings = ratings or list(range(81, 94))
+        plat_param = "pc" if platform == "pc" else "console"
+        url = f"https://www.fut.gg/cheapest-by-rating/?platform={plat_param}"
+        page = await self._new_page()
+        results: dict[int, dict[str, Any]] = {}
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        try:
+            await self._navigate(page, url)
+            # Wait for at least one card anchor to appear
+            try:
+                await page.wait_for_selector('a[href*="/players/"][href*="/26-"]', timeout=60000)
+            except Exception:
+                pass
+
+            # The page has rating sections.  Each section has a heading that includes the
+            # rating number (e.g. "Cheapest 89 Rated Players") and then a row of card anchors.
+            # We iterate over all card anchors and group by their rating badge value.
+            anchors = page.locator('a[href*="/players/"][href*="/26-"]')
+            total_anchors = await anchors.count()
+            total_anchors = min(total_anchors, 300)  # cap to avoid runaway
+
+            # Per-rating card accumulator
+            rating_cards: dict[int, list[dict[str, Any]]] = {}
+
+            for i in range(total_anchors):
+                anchor = anchors.nth(i)
+
+                badge_el = anchor.locator(".font-din").first
+                if await badge_el.count() == 0:
+                    continue
+                badge_text = await badge_el.inner_text()
+                position, card_rating_f, price = _parse_badge(badge_text)
+                if price is None or card_rating_f is None:
+                    continue
+
+                card_rating = int(card_rating_f)
+                if card_rating not in ratings:
+                    continue
+
+                bucket = rating_cards.setdefault(card_rating, [])
+                if len(bucket) >= 10:
+                    continue  # already have 10 for this rating
+
+                href = await anchor.get_attribute("href") or ""
+                card_key = _card_key_from_href(href) or ""
+
+                card_imgs = anchor.locator("img")
+                player_name = ""
+                card_version = ""
+                img_count = await card_imgs.count()
+                for j in range(img_count):
+                    alt = await card_imgs.nth(j).get_attribute("alt") or ""
+                    if " - " in alt and any(c.isdigit() for c in alt):
+                        player_name, card_version = _player_name_from_alt(alt)
+                        break
+
+                club_badge_url = ""
+                club_name = ""
+                club_img = anchor.locator("img[src*='club']").first
+                if await club_img.count() > 0:
+                    club_badge_url = await club_img.get_attribute("src") or ""
+                    club_name = await club_img.get_attribute("alt") or ""
+
+                nation_flag_url = ""
+                nation_name = ""
+                nation_img = anchor.locator("img[src*='nation'], img[src*='flag']").first
+                if await nation_img.count() > 0:
+                    nation_flag_url = await nation_img.get_attribute("src") or ""
+                    nation_name = await nation_img.get_attribute("alt") or ""
+
+                bucket.append({
+                    "card_key": card_key,
+                    "player_name": player_name,
+                    "rating": card_rating,
+                    "position": position,
+                    "club_name": club_name,
+                    "nation_name": nation_name,
+                    "club_badge_url": club_badge_url,
+                    "nation_flag_url": nation_flag_url,
+                    "card_version": card_version,
+                    "bin_price": price,
+                })
+
+            # Persist each rating bucket
+            con = sqlite3.connect(self.db_path)
+            with con:
+                for card_rating, cards in rating_cards.items():
+                    if not cards:
+                        continue
+                    prices_sorted = sorted(c["bin_price"] for c in cards)
+                    cheapest = prices_sorted[0]
+                    second_cheapest = prices_sorted[1] if len(prices_sorted) > 1 else None
+                    median = prices_sorted[len(prices_sorted) // 2]
+
+                    cur = con.execute(
+                        """INSERT INTO fodder_snapshots
+                           (rating, platform, ts_utc, cheapest_bin, second_cheapest_bin, median_bin, game_edition)
+                           VALUES (?,?,?,?,?,?,?)""",
+                        (card_rating, platform, ts, cheapest, second_cheapest, median, "fc26"),
+                    )
+                    snapshot_id = cur.lastrowid
+                    for rank, card in enumerate(cards, start=1):
+                        con.execute(
+                            """INSERT INTO fodder_cards
+                               (snapshot_id, card_key, player_name, rating, position,
+                                club_name, nation_name, club_badge_url, nation_flag_url,
+                                card_version, bin_price, rank_in_rating, ts_utc, platform, game_edition)
+                               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            (
+                                snapshot_id, card["card_key"], card["player_name"], card["rating"],
+                                card["position"], card["club_name"], card["nation_name"],
+                                card["club_badge_url"], card["nation_flag_url"], card["card_version"],
+                                card["bin_price"], rank, ts, platform, "fc26",
+                            ),
+                        )
+
+                    results[card_rating] = {
+                        "rating": card_rating,
+                        "platform": platform,
+                        "cheapest_bin": cheapest,
+                        "second_cheapest_bin": second_cheapest,
+                        "median_bin": median,
+                        "ts_utc": ts,
+                        "cards": cards,
+                    }
+                    logger.info(
+                        "fodder_all_ratings: rating=%d platform=%s cheapest=%d cards=%d",
+                        card_rating, platform, cheapest, len(cards),
+                    )
+
+            records = sum(len(v["cards"]) for v in results.values())
+            _write_health(self.db_path, _FODDER_SOURCE, success=True, records_written=records)
+            return results
 
         except Exception as exc:
             _write_health(self.db_path, _FODDER_SOURCE, success=False, error_text=str(exc))
@@ -333,13 +565,31 @@ class FutGGScraper(PlaywrightScraperBase):
         platforms: list[Platform] | None = None,
     ) -> int:
         """
-        Sweep all rating+platform combos sequentially (one shared Playwright context).
-        Returns total rows inserted.
+        Sweep all rating+platform combos using fetch_fodder_all_ratings (1 page load per
+        platform instead of 13).  Falls back to per-rating fetch_fodder_cheapest if the
+        all-ratings page yields no results for a platform.
+
+        Returns total snapshot rows inserted.
         """
-        ratings = ratings or list(range(82, 92))
+        ratings = ratings or list(range(81, 94))
         platforms = platforms or ["pc", "console"]
         total = 0
         for plat in platforms:
+            try:
+                results = await self.fetch_fodder_all_ratings(plat, ratings)
+                total += len(results)
+                if results:
+                    logger.info(
+                        "fodder_sweep (all-ratings): platform=%s ratings_found=%d", plat, len(results)
+                    )
+                    continue
+            except Exception as exc:
+                logger.warning(
+                    "fetch_fodder_all_ratings failed for platform=%s: %s — falling back to per-rating", plat, exc
+                )
+
+            # Fallback: per-rating fetches
+            logger.info("fodder_sweep: falling back to per-rating fetches for platform=%s", plat)
             for rating in ratings:
                 try:
                     result = await self.fetch_fodder_cheapest(rating, plat)
@@ -347,9 +597,49 @@ class FutGGScraper(PlaywrightScraperBase):
                         total += 1
                 except Exception as exc:
                     logger.error(
-                        "fodder_sweep failed for rating=%d platform=%s: %s", rating, plat, exc
+                        "fodder_sweep fallback failed for rating=%d platform=%s: %s", rating, plat, exc
                     )
         return total
+
+    async def fetch_card_on_demand(self, card_key: str, platform: Platform, max_age_hours: float = 2.0) -> dict[str, Any] | None:
+        """
+        Fetch a fresh price for card_key/platform only if the latest snapshot is
+        older than max_age_hours (or absent). Called by the signal tagger so that
+        any mentioned card has fresh price data when Ask LLM is called.
+
+        Returns the snapshot dict from fetch_card_prices, or None if skipped / card absent.
+        """
+        cutoff = datetime.now(timezone.utc)
+        from datetime import timedelta
+        cutoff_str = (cutoff - timedelta(hours=max_age_hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        con = sqlite3.connect(self.db_path)
+        row = con.execute(
+            """SELECT id FROM cards WHERE card_key = ?""", (card_key,)
+        ).fetchone()
+        if not row:
+            con.close()
+            return None
+        card_id = row[0]
+
+        fresh = con.execute(
+            """SELECT id FROM price_snapshots
+               WHERE card_id = ? AND platform = ? AND ts_utc >= ?
+               LIMIT 1""",
+            (card_id, platform, cutoff_str),
+        ).fetchone()
+        con.close()
+
+        if fresh:
+            logger.debug("fetch_card_on_demand: %s/%s is fresh, skipping", card_key, platform)
+            return None
+
+        logger.info("fetch_card_on_demand: fetching %s/%s (stale/absent)", card_key, platform)
+        try:
+            return await self.fetch_card_prices(card_key, platform)
+        except Exception as exc:
+            logger.warning("fetch_card_on_demand failed for %s/%s: %s", card_key, platform, exc)
+            return None
 
     async def fetch_card_prices(self, card_key: str, platform: Platform) -> dict[str, Any] | None:
         """
@@ -449,9 +739,9 @@ async def _main() -> None:
 
     async with FutGGScraper(db_path=db_path) as scraper:
         if args.fodder:
-            print(f"Running fodder sweep — platform={args.platform}, ratings 82-91")
+            print(f"Running fodder sweep — platform={args.platform}, ratings 81-93")
             total = await scraper.fodder_sweep(
-                ratings=list(range(82, 92)),
+                ratings=list(range(81, 94)),
                 platforms=[args.platform],
             )
             print(f"Fodder snapshots inserted: {total}")

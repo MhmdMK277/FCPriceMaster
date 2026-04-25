@@ -266,3 +266,14 @@ The scheduler factory does not call `.start()`. This lets unit tests inspect job
 
 **`taskkill /F /T /PID` in dev.ps1 for recursive kill.**
 Python spawns Chromium as a grandchild. `Stop-Process -Force` only kills the direct child (the PowerShell wrapper). `taskkill /F /T` kills the entire process tree rooted at the backend PID, ensuring Chromium.exe is always cleaned up when the Electron window closes.
+
+## 2026-04-25 Decisions
+
+**Fodder covers ratings 81-93, all card versions, only 0-coin excluded.**
+`fodder_snapshots` stores aggregate prices per rating/platform sweep. `fodder_cards` (migration 0005) stores top-10 individual card rows per snapshot with full per-card metadata (player_name, position, club_name, nation_name, club_badge_url, nation_flag_url, card_version, bin_price, rank_in_rating). Only cards where `_parse_price` returns `None` (EXTINCT/0/"") are excluded — no minimum price floor.
+
+**FUT.GG `?sort=cheapest&rating=N` is a range bracket, not exact-match.**
+Observed during TOTS season: ratings 81-90 returned the same cheapest card set because the market's cheapest gold cards in that range are the same heavily-supplied TOTS cards. Scraper stores what FUT.GG displays without interpretation — the fodder price per rating is the cheapest non-zero card on that page.
+
+**Club badge and nation flag URLs not available on cheapest list page.**
+`img[src*='club']` and `img[src*='nation']` selectors returned 0 matches. FUT.GG's cheapest list page does not embed club/nation images in the card anchor elements (they appear to be part of a SVG card art layer). Frontend uses `ImageWithFallback` component that shows a letter-initial placeholder on empty/failed URLs.

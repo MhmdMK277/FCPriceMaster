@@ -120,7 +120,11 @@ Update status at the end of every session. Do not skip ahead — finish the curr
 - [ ] Fixture-to-signal job: 48h before a headline match, emit an "anticipate matchup SBC" signal tagged with both squads' common/informs cards
 
 ### 2.5 "Ask" feature (first LLM integration) — Phase 2d COMPLETE
-- [x] Fodder tracker: FUT.GG cheapest-by-rating pages, ratings 82-91, both platforms, every 30 min
+- [x] Fodder tracker: FUT.GG cheapest-by-rating pages, ratings 81-93, both platforms, every 30 min
+- [x] `0005_fodder_cards.sql` — per-card detail rows linked to fodder_snapshots
+- [x] `fetch_fodder_cheapest` rewritten: extracts top-10 cards per rating, no price floor (only 0-coin excluded), stores in `fodder_cards`
+- [x] `db:getFodderByRating` + `db:getFodderHistory` IPC handlers; `FodderCard` TypeScript interface
+- [x] Fodder view: expandable rows with horizontal card list (position pill, version label, fallback badge images, price), 7-day chart inline
 - [x] `backend/src/db/migrations/0004_fodder.sql` — fodder_snapshots, card_aliases, llm_calls, tagged_at
 - [x] `backend/src/workers/signal_tagger.py` — rapidfuzz 85% threshold, seeded aliases, every 5 min
 - [x] `backend/src/llm/context_builder.py` + `ask.py` — Python CLI for standalone testing
@@ -132,6 +136,8 @@ Update status at the end of every session. Do not skip ahead — finish the curr
 - [x] Real LLM test: "TOTW OOP Wirtz gold under 63K" → AVOID/85%/high risk ($0.000445)
 - [x] Daily cap enforcement verified: correctly raises RuntimeError when exceeded
 - [x] All 89 tests passing; selftest exits 0 with all handlers registered
+- [x] **Session 14 bugfixes:** futgg_fodder 41-failure streak fixed — platform switched from Radix dropdown to URL param (`?sort=cheapest&rating=N&platform=pc|console`); no more timeout errors; 20 snapshots (10 PC + 10 console) confirmed. `fetch_card_on_demand` added; signal tagger triggers on-demand price fetch for newly tagged cards.
+- [x] **Session 16 URL fix:** `?sort=cheapest&rating=N` ignored by FUT.GG — rewrote to `?overall__gte=N&overall__lte=N&sorts=current_price&platform=pc|console`; added `fetch_fodder_all_ratings` (single-page sweep, falls back gracefully to per-rating); verified both platforms with correct prices (82→400, 89→3300, 90→5400 PC).
 
 ### 2.6 Phase 2 exit criteria
 - [ ] All five sources ingesting reliably for a week

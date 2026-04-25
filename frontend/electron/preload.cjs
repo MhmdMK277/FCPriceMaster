@@ -7,8 +7,10 @@ contextBridge.exposeInMainWorld('fcdb', {
   getCardDetail:    (opts) => ipcRenderer.invoke('db:getCardDetail', opts),
   getScraperHealth: (opts) => ipcRenderer.invoke('db:getScraperHealth', opts),
   getRecentSignals: (opts) => ipcRenderer.invoke('db:getRecentSignals', opts),
-  getFodderSummary: (opts) => ipcRenderer.invoke('db:getFodderSummary', opts),
-  getFodderSnapshot:(opts) => ipcRenderer.invoke('db:getFodderSnapshot', opts),
+  getFodderSummary:  (opts) => ipcRenderer.invoke('db:getFodderSummary', opts),
+  getFodderSnapshot: (opts) => ipcRenderer.invoke('db:getFodderSnapshot', opts),
+  getFodderByRating: (opts) => ipcRenderer.invoke('db:getFodderByRating', opts),
+  getFodderHistory:  (opts) => ipcRenderer.invoke('db:getFodderHistory', opts),
   getLLMHistory:    (opts) => ipcRenderer.invoke('db:getLLMHistory', opts),
   askLLM:           (opts) => ipcRenderer.invoke('db:askLLM', opts),
 

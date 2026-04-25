@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { Platform, AskVerdict, LLMHistoryRow } from '../lib/types';
+import type { Platform, AskResult, AskVerdict, LLMHistoryRow } from '../lib/types';
 
-function VerdictBadge({ verdict }: { verdict: string }) {
+function VerdictBadge({ verdict }: { verdict: string | null | undefined }) {
+  if (!verdict) return null;
   const cls = verdict === 'buy' ? 'verdict-buy' : verdict === 'hold' ? 'verdict-hold' : 'verdict-avoid';
   return <span className={`verdict-badge ${cls}`}>{verdict.toUpperCase()}</span>;
 }
@@ -21,7 +22,7 @@ function fmt(n: number | null | undefined): string {
 export function Ask({ platform, setPlatform }: { platform: Platform; setPlatform: (p: Platform) => void }) {
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<AskVerdict | null>(null);
+  const [result, setResult] = useState<AskResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<LLMHistoryRow[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -170,20 +171,22 @@ export function Ask({ platform, setPlatform }: { platform: Platform; setPlatform
       {historyOpen && history.length > 0 && (
         <div className="ask-history">
           {history.map(row => {
-            let verdict: AskVerdict['verdict'] | null = null;
+            let parsedVerdict: AskVerdict | null = null;
+            let verdictString: string | null = null;
             try {
-              const parsed = JSON.parse(row.output_json || '{}');
-              verdict = parsed;
+              const parsed = JSON.parse(row.output_json || '{}') as AskResult;
+              parsedVerdict = parsed?.verdict ?? null;
+              verdictString = parsed?.verdict?.verdict ?? null;
             } catch {}
             return (
               <div key={row.id} className="ask-history-row">
                 <div className="ask-history-meta">
                   <span className="age">{new Date(row.ts_utc).toLocaleString()}</span>
-                  {verdict && <VerdictBadge verdict={verdict.verdict} />}
+                  {verdictString && <VerdictBadge verdict={verdictString} />}
                   <span className="ask-history-cost">${(row.cost_usd || 0).toFixed(4)}</span>
                 </div>
                 <div className="ask-history-text">{row.input_text}</div>
-                {verdict && <div className="ask-history-reasoning">{verdict.reasoning}</div>}
+                {parsedVerdict && <div className="ask-history-reasoning">{parsedVerdict.reasoning}</div>}
               </div>
             );
           })}

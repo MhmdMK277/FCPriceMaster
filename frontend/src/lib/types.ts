@@ -99,6 +99,23 @@ export interface FodderSnapshotRow {
   median_bin: number | null;
 }
 
+export interface FodderCard {
+  id: number;
+  card_key: string;
+  player_name: string;
+  rating: number;
+  position: string;
+  club_name: string;
+  nation_name: string;
+  club_badge_url: string;
+  nation_flag_url: string;
+  card_version: string;
+  bin_price: number;
+  rank_in_rating: number;
+  ts_utc: string;
+  platform: string;
+}
+
 export interface AskVerdict {
   verdict: 'buy' | 'hold' | 'avoid';
   confidence: number;

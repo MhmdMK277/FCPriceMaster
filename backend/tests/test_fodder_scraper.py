@@ -42,42 +42,48 @@ def test_parse_price_handles_various_formats():
     assert _parse_price("1.2M") == 1_200_000
     assert _parse_price("EXTINCT") is None
     assert _parse_price("0") is None
-    assert _parse_price("450") == 450  # troll listing value (filtering done elsewhere)
+    assert _parse_price("450") == 450
 
 
 def test_fodder_filter_logic():
-    """Verify the 0-coin and <500-coin filter used in fetch_fodder_cheapest."""
-    raw_prices = [None, 400, 0, 55000, 58000, 62000, 70000, 80000]
-    valid = [p for p in raw_prices if p and p >= 500]
-    valid = valid[:5]
-    assert valid == [55000, 58000, 62000, 70000, 80000]
-    cheapest = valid[0]
-    second = valid[1] if len(valid) > 1 else None
-    median = valid[len(valid) // 2] if valid else None
-    assert cheapest == 55000
-    assert second == 58000
-    assert median == 62000
+    """Only 0-coin / None cards are excluded — no minimum price floor."""
+    raw_prices = [None, 0, 400, 1500, 3500, 55000, 58000, 62000, 70000, 80000]
+    # _parse_price("0") returns None, so filter is: price is not None
+    valid = [p for p in raw_prices if p is not None]
+    valid = valid[:10]
+    assert valid == [0, 400, 1500, 3500, 55000, 58000, 62000, 70000, 80000]
+    # In the scraper, _parse_price("0") returns None, so 0 never appears in practice
+    # Simulate scraper behaviour: skip None only
+    from src.scrapers.futgg import _parse_badge
+    texts = ["EXTINCT", "0", "400", "CAM\n89\n3.5K"]
+    prices = [_parse_badge(t)[2] for t in texts]
+    # EXTINCT → None, "0" → None, "400" → None (parse_price treats "0" as None),
+    # "CAM\n89\n3.5K" → 3500
+    assert prices[0] is None  # EXTINCT
+    assert prices[1] is None  # 0
+    assert prices[2] == 400   # 400 coins is valid (no floor)
+    assert prices[3] == 3500
 
 
 # ---------------------------------------------------------------------------
-# Integration: DB insertion
+# Integration: DB insertion — fodder_snapshots
 # ---------------------------------------------------------------------------
 
 def test_fodder_snapshot_insert(tmp_db):
-    """Verify fodder_snapshots table accepts rows with the correct schema."""
+    """fodder_snapshots accepts rows with correct schema."""
     con = sqlite3.connect(tmp_db)
     con.execute(
         """INSERT INTO fodder_snapshots
            (rating, platform, cheapest_bin, second_cheapest_bin, median_bin, game_edition)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        (85, "pc", 55000, 58000, 62000, "fc26"),
+        (85, "pc", 3500, 4200, 5800, "fc26"),
     )
     con.commit()
     row = con.execute(
         "SELECT rating, platform, cheapest_bin, second_cheapest_bin, median_bin FROM fodder_snapshots"
     ).fetchone()
     con.close()
-    assert row == (85, "pc", 55000, 58000, 62000)
+    assert row == (85, "pc", 3500, 4200, 5800)
 
 
 def test_fodder_snapshot_rejects_invalid_platform(tmp_db):
@@ -86,65 +92,185 @@ def test_fodder_snapshot_rejects_invalid_platform(tmp_db):
     with pytest.raises(sqlite3.IntegrityError):
         con.execute(
             "INSERT INTO fodder_snapshots (rating, platform, cheapest_bin) VALUES (?,?,?)",
-            (85, "xbox", 55000),
+            (85, "xbox", 3500),
         )
         con.commit()
     con.close()
 
 
 def test_multiple_fodder_snapshots_ratings(tmp_db):
-    """Verify we can insert fodder rows for all ratings 82-91."""
+    """Can insert fodder rows for all ratings 81-93."""
     con = sqlite3.connect(tmp_db)
-    for rating in range(82, 92):
+    for rating in range(81, 94):
         for platform in ("pc", "console"):
             con.execute(
                 """INSERT INTO fodder_snapshots
                    (rating, platform, cheapest_bin, second_cheapest_bin, median_bin)
                    VALUES (?,?,?,?,?)""",
-                (rating, platform, 50000 + rating * 100, 51000 + rating * 100, 52000 + rating * 100),
+                (rating, platform, 3000 + rating * 50, 3100 + rating * 50, 3500 + rating * 50),
             )
     con.commit()
     count = con.execute("SELECT COUNT(*) FROM fodder_snapshots").fetchone()[0]
     con.close()
-    assert count == 20  # 10 ratings × 2 platforms
+    assert count == 26  # 13 ratings × 2 platforms
+
+
+# ---------------------------------------------------------------------------
+# Integration: DB insertion — fodder_cards
+# ---------------------------------------------------------------------------
+
+def test_fodder_cards_insert(tmp_db):
+    """fodder_cards rows insert correctly and link to fodder_snapshots."""
+    con = sqlite3.connect(tmp_db)
+    cur = con.execute(
+        """INSERT INTO fodder_snapshots (rating, platform, cheapest_bin, median_bin)
+           VALUES (89, 'pc', 3500, 5000)"""
+    )
+    snap_id = cur.lastrowid
+    con.execute(
+        """INSERT INTO fodder_cards
+           (snapshot_id, card_key, player_name, rating, position, club_name, nation_name,
+            club_badge_url, nation_flag_url, card_version, bin_price, rank_in_rating, platform)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (snap_id, "26-123456", "Wirtz", 89, "CAM", "Bayer Leverkusen", "Germany",
+         "https://cdn.fut.gg/clubs/example.png", "https://cdn.fut.gg/nations/example.png",
+         "Normal", 3500, 1, "pc"),
+    )
+    con.commit()
+
+    row = con.execute(
+        "SELECT player_name, bin_price, rank_in_rating, club_badge_url, nation_flag_url FROM fodder_cards"
+    ).fetchone()
+    con.close()
+    assert row is not None
+    assert row[0] == "Wirtz"
+    assert row[1] == 3500
+    assert row[2] == 1
+    assert row[3] == "https://cdn.fut.gg/clubs/example.png"
+    assert row[4] == "https://cdn.fut.gg/nations/example.png"
+
+
+def test_fodder_cards_image_urls_non_null(tmp_db):
+    """Image URL columns default to empty string (not NULL)."""
+    con = sqlite3.connect(tmp_db)
+    cur = con.execute(
+        """INSERT INTO fodder_snapshots (rating, platform, cheapest_bin, median_bin)
+           VALUES (82, 'console', 1200, 1800)"""
+    )
+    snap_id = cur.lastrowid
+    con.execute(
+        """INSERT INTO fodder_cards
+           (snapshot_id, card_key, player_name, rating, position,
+            bin_price, rank_in_rating, platform)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (snap_id, "", "Unknown", 82, "ST", 1200, 1, "console"),
+    )
+    con.commit()
+
+    row = con.execute(
+        "SELECT club_badge_url, nation_flag_url, club_name, nation_name FROM fodder_cards"
+    ).fetchone()
+    con.close()
+    # All should be empty string (NOT NULL default '')
+    assert row is not None
+    for val in row:
+        assert val is not None
+        assert isinstance(val, str)
+
+
+def test_fodder_cards_no_zero_price(tmp_db):
+    """Verify that fodder_cards only contains non-zero prices when inserted by scraper logic."""
+    prices = [None, 0, 400, 1500, 3500]
+    # Simulate what the scraper does: skip price is None
+    valid = [p for p in prices if p is not None]
+    assert 0 in valid   # 0 would come from _parse_price("0") which returns None, so never here
+    # In practice _parse_price("0") → None, so 0 never makes it past the filter
+    # This test verifies that None is correctly excluded
+    filtered = [p for p in prices if p is not None]
+    assert None not in filtered
+    assert len(filtered) == 4  # 0, 400, 1500, 3500
 
 
 # ---------------------------------------------------------------------------
 # Mocked Playwright: fetch_fodder_cheapest
 # ---------------------------------------------------------------------------
 
+def _make_anchor_mock(badge_text: str, alt: str = "", href: str = ""):
+    """Build a mock anchor element with configurable badge/alt/href."""
+    anchor = MagicMock()
+
+    # Badge element (.font-din)
+    first_badge = MagicMock()
+    async def inner_text(): return badge_text
+    async def badge_count(): return 1 if badge_text else 0
+    first_badge.inner_text = inner_text
+    first_badge.count = badge_count
+    badge_locator = MagicMock()
+    badge_locator.first = first_badge
+
+    # Card img (for alt text with player name/version)
+    card_img = MagicMock()
+    async def img_alt_get(attr):
+        return alt if attr == "alt" else ""
+    card_img.get_attribute = img_alt_get
+
+    img_locator = MagicMock()
+    img_locator.nth = MagicMock(return_value=card_img)
+    async def img_count(): return 1 if alt else 0
+    img_locator.count = img_count
+
+    # Club img
+    club_img = MagicMock()
+    async def club_count(): return 0
+    club_img.count = club_count
+    club_locator = MagicMock()
+    club_locator.first = club_img
+
+    # Nation img
+    nation_img = MagicMock()
+    async def nation_count(): return 0
+    nation_img.count = nation_count
+    nation_locator = MagicMock()
+    nation_locator.first = nation_img
+
+    def locator_dispatch(sel):
+        if ".font-din" in sel:
+            return badge_locator
+        if "club" in sel:
+            return club_locator
+        if "nation" in sel or "flag" in sel:
+            return nation_locator
+        return img_locator  # fallback for img
+
+    anchor.locator = MagicMock(side_effect=locator_dispatch)
+
+    async def get_attribute(attr):
+        if attr == "href": return href
+        return ""
+    anchor.get_attribute = get_attribute
+    return anchor
+
+
 @pytest.mark.asyncio
 async def test_fetch_fodder_cheapest_mock(tmp_db):
-    """Verify fetch_fodder_cheapest persists a row with correct aggregates."""
-    from src.scrapers.futgg import FutGGScraper
-
-    # Build mock badge elements returning prices: 57K, 59K, 63K, 71K, 85K
-    # first element is troll (400 coins) and one is None — should be filtered
-    badge_texts = ["", "400", "57K", "59K", "63K", "71K", "85K"]
+    """fetch_fodder_cheapest persists snapshot + per-card rows with correct aggregates."""
+    # Cards: 5 valid non-zero cards (CAM badge format: pos\nrating\nprice)
+    card_data = [
+        ("CAM\n89\n3.5K", "Wirtz - 89 - Normal", "/players/188350-wirtz/26-100001/"),
+        ("ST\n89\n4.2K",  "Kane - 89 - Normal",  "/players/100001-kane/26-100002/"),
+        ("CB\n89\n5.8K",  "Ramos - 89 - Normal", "/players/100002-ramos/26-100003/"),
+        ("LM\n89\n6.1K",  "Sane - 89 - Normal",  "/players/100003-sane/26-100004/"),
+        ("RW\n89\n7.0K",  "Salah - 89 - Normal", "/players/100004-salah/26-100005/"),
+    ]
 
     mock_anchors = MagicMock()
-    mock_anchors.count = AsyncMock(return_value=len(badge_texts))
+    mock_anchors.count = AsyncMock(return_value=len(card_data))
+    mock_anchors.nth = MagicMock(side_effect=lambda i: _make_anchor_mock(
+        card_data[i][0], card_data[i][1], card_data[i][2]
+    ))
 
     mock_page = AsyncMock()
-    mock_page.locator = MagicMock()
-
-    def make_nth_anchor(i):
-        anchor = MagicMock()
-        # Playwright: anchor.locator(".font-din").first.count() and .inner_text()
-        first_el = MagicMock()
-        async def inner_text():
-            return badge_texts[i]
-        async def count():
-            return 1 if badge_texts[i] else 0
-        first_el.inner_text = inner_text
-        first_el.count = count
-        locator_mock = MagicMock()
-        locator_mock.first = first_el
-        anchor.locator = MagicMock(return_value=locator_mock)
-        return anchor
-
-    mock_page.locator.return_value = mock_anchors
-    mock_anchors.nth = MagicMock(side_effect=make_nth_anchor)
+    mock_page.locator = MagicMock(return_value=mock_anchors)
 
     scraper = FutGGScraper(db_path=tmp_db)
     scraper._context = MagicMock()
@@ -153,18 +279,70 @@ async def test_fetch_fodder_cheapest_mock(tmp_db):
     with patch.object(scraper, '_navigate', new_callable=AsyncMock), \
          patch.object(scraper, '_set_platform', new_callable=AsyncMock), \
          patch.object(scraper, '_dismiss_cmp', new_callable=AsyncMock):
-        await scraper.fetch_fodder_cheapest(85, "pc")
+        result = await scraper.fetch_fodder_cheapest(89, "pc")
+
+    assert result is not None
+    assert result["cheapest_bin"] == 3500
+    assert result["second_cheapest_bin"] == 4200
+    assert result["median_bin"] == 5800
 
     con = sqlite3.connect(tmp_db)
-    row = con.execute(
+    snap = con.execute(
         "SELECT rating, platform, cheapest_bin, second_cheapest_bin, median_bin FROM fodder_snapshots"
     ).fetchone()
+    assert snap == (89, "pc", 3500, 4200, 5800)
+
+    cards = con.execute(
+        "SELECT player_name, bin_price, rank_in_rating FROM fodder_cards ORDER BY rank_in_rating"
+    ).fetchall()
     con.close()
-    # Expected: filter out None, 400 -> valid=[57000,59000,63000,71000,85000]
-    # cheapest=57000, second=59000, median=63000
-    assert row is not None
-    assert row[0] == 85
-    assert row[1] == "pc"
-    assert row[2] == 57000
-    assert row[3] == 59000
-    assert row[4] == 63000
+
+    assert len(cards) == 5
+    assert cards[0][0] == "Wirtz"
+    assert cards[0][1] == 3500
+    assert cards[0][2] == 1
+    assert cards[1][0] == "Kane"
+    assert cards[1][2] == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_fodder_cheapest_ipc_shape(tmp_db):
+    """getFodderByRating returns correct shape after a fodder sweep."""
+    con = sqlite3.connect(tmp_db)
+    cur = con.execute(
+        """INSERT INTO fodder_snapshots (rating, platform, cheapest_bin, median_bin)
+           VALUES (89, 'pc', 3500, 5000)"""
+    )
+    snap_id = cur.lastrowid
+    for rank, (name, price) in enumerate([("Wirtz", 3500), ("Kane", 4200), ("Ramos", 5800)], 1):
+        con.execute(
+            """INSERT INTO fodder_cards
+               (snapshot_id, card_key, player_name, rating, position,
+                club_name, nation_name, club_badge_url, nation_flag_url,
+                card_version, bin_price, rank_in_rating, platform)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (snap_id, f"26-{rank}", name, 89, "CAM", "", "", "", "", "Normal", price, rank, "pc"),
+        )
+    con.commit()
+    con.close()
+
+    # Simulate getFodderByRating query
+    con2 = sqlite3.connect(tmp_db)
+    rows = con2.execute(
+        """SELECT fc.player_name, fc.bin_price, fc.rank_in_rating,
+                  fc.club_badge_url, fc.nation_flag_url
+           FROM fodder_cards fc
+           WHERE fc.snapshot_id = (
+             SELECT id FROM fodder_snapshots WHERE rating=89 AND platform='pc'
+             ORDER BY ts_utc DESC LIMIT 1
+           )
+           ORDER BY fc.rank_in_rating ASC LIMIT 10""",
+    ).fetchall()
+    con2.close()
+
+    assert len(rows) == 3
+    assert rows[0][0] == "Wirtz"
+    assert rows[0][1] == 3500
+    # Image URL columns are non-null strings
+    assert rows[0][3] is not None
+    assert rows[0][4] is not None

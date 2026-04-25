@@ -21,6 +21,208 @@ Required fields per entry: date, session number, goal, done, next, gotchas, chan
 
 <!-- Entries go below this line, newest first -->
 
+### 2026-04-25 — session 17
+**Goal:** Fix Ask.tsx history crash — `TypeError: Cannot read properties of undefined (reading 'toUpperCase')` in VerdictBadge.
+
+**Done:**
+- Root cause: `output_json` stores `{ verdict: { verdict: "avoid", ... }, ... }` (nested), but history rendering passed `parsed?.verdict` (the object) instead of `parsed?.verdict?.verdict` (the string) to VerdictBadge.
+- Added `verdictString = parsed?.verdict?.verdict ?? null` extraction in history map loop; VerdictBadge now receives the string, not the object.
+- Added null guard to VerdictBadge (`if (!verdict) return null`) so stale/malformed history rows render safely.
+- TypeScript build clean (0 errors).
+
+**Next:** Continue Phase 3 tasks per ROADMAP.
+
+**Gotchas:** The DB stores the full Python response object with nested `verdict.verdict`; never assume the top-level key is the string directly.
+
+**Changed files:**
+- `frontend/src/views/Ask.tsx`
+
+### 2026-04-25 — session 16
+**Goal:** Fix fodder scraper URL — `?sort=cheapest&rating=N` was ignored by FUT.GG causing all ratings to show TOTS cards (~38K); rewrite to use correct `?overall__gte=N&overall__lte=N&sorts=current_price&platform=pc|console`.
+
+**Done:**
+- **Root cause confirmed:** old URL `?sort=cheapest&rating={N}` was not honored by FUT.GG — it returned highest-rated TOTS cards regardless of rating parameter.
+- **URL fix in `fetch_fodder_cheapest`:** changed to `?overall__gte={N}&overall__lte={N}&sorts=current_price&platform={plat_param}`. Platform now passed as URL param (no Radix dropdown needed). Selector timeout increased to 60s.
+- **`fetch_fodder_all_ratings` added:** navigates `/cheapest-by-rating/?platform={plat_param}` once per platform, groups card anchors by rating badge, bulk-inserts all ratings. Designed as 1-page-load-per-platform alternative to 13 per-rating calls. Falls back gracefully to per-rating calls if page yields no anchors (different DOM — confirmed in live test; fallback fires automatically).
+- **`fodder_sweep` rewritten:** tries `fetch_fodder_all_ratings` first; if that returns empty or errors, falls back to `fetch_fodder_cheapest` per-rating. Both platforms tested live with fallback active.
+- **93 tests passing** (no regressions; all mocked tests pass because `_navigate` is patched).
+- **`docs/futgg_endpoints.md` updated** with correct URL, platform param findings, and note about `/cheapest-by-rating/` DOM structure.
+
+**Verified results (2026-04-25 live run):**
+
+PC fodder (new snapshots):
+| Rating | Cheapest | Median |
+|--------|----------|--------|
+| 81 | 300 | 400 |
+| 82 | 400 | 400 |
+| 83 | 800 | 800 |
+| 84 | 800 | 800 |
+| 85 | 800 | 1,200 |
+| 86 | 800 | 900 |
+| 87 | 800 | 1,200 |
+| 88 | 900 | 1,800 |
+| 89 | 3,300 | 3,600 |
+| 90 | 5,400 | 10,000 |
+| 91 | 9,800 | 14,500 |
+| 92 | 13,000 | 22,500 |
+| 93 | 25,000 | 29,800 |
+
+Console fodder (new snapshots): same low-end pattern (82→400, 83→800, 89→3,300, 90→4,000 — console slightly cheaper at 90+).
+
+All prices match expected ranges from owner screenshots. No more 38K+ at low ratings.
+
+**Next:** `/cheapest-by-rating/` DOM investigation (optional — fallback is working fine). Or proceed to Phase 1.6 exit criteria / Phase 2.6 exit criteria.
+
+**Gotchas:**
+- `fetch_fodder_all_ratings` always falls back: `/cheapest-by-rating/` uses different DOM — card anchors matching `a[href*="/players/"][href*="/26-"]` are not present on that page (or not rendered before timeout). The fallback per-rating approach is stable and correct — 13 page loads instead of 1, but all data is right.
+- The fodder table in the CLI output shows ALL historical rows (not just today's) because the query has no date filter — this is expected; the top row is always the freshest.
+
+**Changed files:**
+- `backend/src/scrapers/futgg.py` — URL fix in `fetch_fodder_cheapest`, new `fetch_fodder_all_ratings`, rewritten `fodder_sweep`
+- `docs/futgg_endpoints.md` — new Fodder section with correct URL and platform param findings
+
+### 2026-04-25 — session 15
+**Goal:** Fodder scraper rewrite — per-card detail rows, ratings 81-93, no-floor filtering; proper Fodder dashboard with expandable card list + badges/flags; LLM context fix.
+
+**Done:**
+
+**Migration 0005 — `fodder_cards` table:**
+- New table with: `snapshot_id` FK, `card_key`, `player_name`, `rating`, `position`, `club_name`, `nation_name`, `club_badge_url`, `nation_flag_url`, `card_version`, `bin_price`, `rank_in_rating`, `ts_utc`, `platform`, `game_edition`
+- Applied cleanly. All 16 columns verified.
+
+**Scraper rewrite (`fetch_fodder_cheapest`):**
+- Rating range extended from 82-91 to 81-93 (both `fetch_fodder_cheapest` default range and CLI)
+- Filtering changed: removed `>= 500` floor — only exclude `price is None` (0-coin/extinct)
+- Per-card extraction added: badge text → position/rating/price, img alt → player name + version, `img[src*='club']` → club badge URL + name, `img[src*='nation'|'flag']` → nation flag URL + name, href → card_key
+- Top 10 cards per rating/platform stored in `fodder_cards`
+- `fodder_snapshots` insert now uses `cur.lastrowid` to get `snapshot_id` for FK linkage
+- Aggregate (cheapest/second/median) computed from cards list, not raw_prices list
+
+**Frontend:**
+- `db-queries.cjs`: added `getFodderByRating` (top-N cards from most recent snapshot), `getFodderHistory` (time-series alias)
+- `main.cjs`: registered `db:getFodderByRating` and `db:getFodderHistory` IPC handlers; selftest updated
+- `preload.cjs`, `electron.d.ts`, `types.ts`: `FodderCard` interface added; new handlers exposed
+- `Fodder.tsx` rewritten: ratings 81-93, expandable rows, horizontal scrollable card list with `CardItem` component (club badge img + nation flag img + name + position pill + version + price), `ImageWithFallback` for graceful error handling, 7-day line chart per row, 60s auto-refresh, platform toggle resets expansion state
+
+**LLM context builder (`context_builder.py`):**
+- Rating regex extended to `81-93` (`8[1-9]|9[0-3]`)
+- `_fodder_context` now fetches `fodder_cards` rows for the snapshot and returns `top_cards` list so LLM sees actual player names/prices for mentioned ratings
+
+**Bug fixes (pre-existing):**
+- `Ask.tsx`: `useState<AskVerdict>` → `useState<AskResult>` (state held full result, not just verdict); history loop `verdict.verdict` → `parsedVerdict.verdict` after parsing `AskResult` from JSON
+
+**Tests:** 93/93 passing (updated `test_fodder_scraper.py`: new filter logic tests, `fodder_cards` insertion tests, image URL non-null test, IPC shape test; mock test updated for per-card extraction).
+
+**Actual sweep results — PC platform (2026-04-25 TOTS season):**
+
+| Rating | Cheapest | 2nd | Median | Cards |
+|--------|---------|-----|--------|-------|
+| 81 | 38,800 | 366,000 | 2,500,000 | 10 |
+| 82 | 38,800 | 366,000 | 2,500,000 | 10 |
+| 83 | 38,800 | 366,000 | 2,500,000 | 10 |
+| 84 | 38,800 | 366,000 | 2,500,000 | 10 |
+| 85 | 38,800 | 366,000 | 2,500,000 | 10 |
+| 86 | 38,800 | 366,000 | 2,500,000 | 10 |
+| 87 | 38,800 | 366,000 | 2,500,000 | 10 |
+| 88 | 38,800 | 366,000 | 2,500,000 | 10 |
+| 89 | 38,800 | 366,000 | 2,500,000 | 10 |
+| 90 | 38,800 | 366,000 | 2,500,000 | 10 |
+| 91 | 40,000 | 169,000 | 1,800,000 | 10 |
+| 92 | 40,000 | 366,000 | 2,500,000 | 10 |
+| 93 | 40,000 | 366,000 | 2,500,000 | 10 |
+
+**Console platform:**
+
+| Rating | Cheapest | 2nd | Median | Cards |
+|--------|---------|-----|--------|-------|
+| 81-90 | 40,000 | 366,000 | 2,500,000 | 10 |
+| 91-93 | 40,000 | 366,000 | 2,500,000 | 10 |
+
+**Observations:** Zero 0-coin cards in results. Ratings 81-90 all returned the same top-10 cards (Crama RB cheapest at 38,800 PC / 40,000 console). This is expected TOTS season behaviour — FUT.GG's `?sort=cheapest&rating=N` uses `rating` as a filter bracket; the cheapest gold cards in the 81-90 range are the same pool of heavily supplied TOTS cards. Rating 91 diverges with a different card set. Club and nation name/URL fields are empty (FUT.GG's cheapest list page does not expose `img[src*='club']`/`img[src*='nation']` anchor elements — position badge and version label do populate correctly). Frontend shows letter-initial fallback placeholders for missing badges.
+
+**Verification:**
+- Migration 0005 applied. `fodder_cards` table: 16 columns, all NOT NULL with appropriate defaults.
+- `getFodderByRating` selftest: count=0 before sweep, populated to 10 after.
+- `getFodderHistory` selftest: returns same rows as `getFodderSnapshot`.
+- Zero 0-coin cards confirmed.
+- 10 cards per snapshot for all 26 snapshots.
+- TypeScript build: clean. Vite build: clean. 93/93 tests passing.
+
+**Next:** Phase 2.4 — football-data.org fixtures + fixture-to-signal job. Also: investigate FUT.GG's CDN URL pattern for club badge / nation flag images (may require navigating a card detail page or inspecting network requests on the list page).
+
+**Gotchas:**
+- Club and nation images are NOT embedded in the card anchors on the cheapest list page as `img[src*='club']` or `img[src*='nation']`. They appear to be inlined via CSS background-image or via a different selector. The frontend gracefully shows letter-initial placeholders for now.
+- FUT.GG's `?sort=cheapest&rating=N` treats `rating` as a range filter, not exact-match. Ratings 81-90 currently return the same cheapest set in TOTS season. This is correct scraper behaviour — it stores what FUT.GG displays.
+- `Ask.tsx` had pre-existing TS errors (`AskVerdict` state holding full `AskResult`) — fixed as part of this session to unblock the Vite build.
+
+**Changed files:**
+- `backend/src/db/migrations/0005_fodder_cards.sql` — new migration
+- `backend/src/scrapers/futgg.py` — `fetch_fodder_cheapest` rewrite, range 81-93, per-card extraction
+- `backend/src/llm/context_builder.py` — extended regex + `top_cards` in fodder context
+- `backend/tests/test_fodder_scraper.py` — updated tests for new filter logic + fodder_cards
+- `frontend/electron/db-queries.cjs` — `getFodderByRating`, `getFodderHistory`
+- `frontend/electron/main.cjs` — new IPC handlers, selftest
+- `frontend/electron/preload.cjs` — new handlers exposed
+- `frontend/src/electron.d.ts` — `FodderCard` type, new handler signatures
+- `frontend/src/lib/types.ts` — `FodderCard` interface
+- `frontend/src/views/Fodder.tsx` — full rewrite
+- `frontend/src/views/Ask.tsx` — pre-existing TS bug fixes
+- `ROADMAP.md`, `SESSION_LOG.md`
+
+### 2026-04-25 — session 14
+**Goal:** Fix futgg_fodder 41-consecutive-failure streak; add fetch_card_on_demand; signal tagger price freshness hook.
+
+**Done:**
+
+**Fodder scraper fix (root cause: Radix UI dropdown timeout):**
+- `fetch_fodder_cheapest` was calling `_set_platform(page, platform)` which clicks a Radix UI dropdown. On the `?sort=cheapest&rating=N` pages the dropdown selector `[role="menuitem"]:has-text("PC")` times out at 5000ms — Radix renders differently there than on `/players/trending/`.
+- Fix: bake platform into the URL as a query param (`?sort=cheapest&rating={N}&platform=pc|console`), remove the `_set_platform` call entirely from `fetch_fodder_cheapest`. Trending page still uses the dropdown.
+- Verified: ran full sweep both platforms — zero timeouts, 20 snapshots inserted.
+
+**Fodder sweep results (2026-04-25, TOTS season):**
+
+PC:
+| Rating | Cheapest | 2nd | Median |
+|--------|---------|-----|--------|
+| 82-91  | 370,000 | 388,000 | 2,500,000 |
+
+Console:
+| Rating | Cheapest | 2nd | Median |
+|--------|---------|-----|--------|
+| 82     | 370,000 | 388,000 | 2,500,000 |
+| 83-91  | 370,000 | 390,000 | 2,600,000 |
+
+PC and console return different 2nd/median values — platform param confirmed working. High prices consistent with late-April TOTS promo (SBC demand spike).
+
+**fetch_card_on_demand:**
+- Added `FutGGScraper.fetch_card_on_demand(card_key, platform, max_age_hours=2.0)` — checks if a price_snapshot exists within the last 2h for that card+platform; if not, calls `fetch_card_prices`. Skips silently if fresh.
+
+**Signal tagger price freshness hook:**
+- `run_tagging` now returns `(count: int, newly_tagged_keys: list[str])` instead of just `int`.
+- `job_signal_tagger` creates a temporary `FutGGScraper` context after tagging and calls `fetch_card_on_demand` for each newly-tagged card (both platforms). Ensures Ask LLM always has ≤2h-old price data for mentioned cards.
+
+**Tests:** 89/89 passing (2 signal_tagger tests updated to unpack new tuple return).
+
+**Next:** Phase 2.4 — football-data.org fixtures + fixture-to-signal job.
+
+**Gotchas:**
+- FUT.GG's Radix dropdown only works reliably on `/players/trending/` — any other page should use URL params for platform.
+- TOTS season prices are 100-500x normal fodder prices. The scraper is correct; the market is inflated.
+- `run_tagging` return type changed — any caller that assigned to a bare `count` needs unpacking.
+
+**Changed files:**
+- `backend/src/scrapers/futgg.py` — URL platform param in `fetch_fodder_cheapest`, new `fetch_card_on_demand` method
+- `backend/src/workers/signal_tagger.py` — `run_tagging` returns tuple, `job_signal_tagger` triggers on-demand fetch
+- `backend/tests/test_signal_tagger.py` — 2 tests updated to unpack tuple return
+- `ROADMAP.md`, `SESSION_LOG.md`
+
+### 2026-04-25 — session 13
+**Goal:** Verify Ask view appears as first sidebar item; fix if missing.
+**Done:** Full investigation — Ask view is correctly implemented. `Ask.tsx` named export is present, imported in `App.tsx`, listed as the first `NavItem` (line 49), default view (`useState<View>('ask')`), rendered in content area. TypeScript build: clean. Vite build: succeeds. `--selftest`: exit 0. No code change was needed — the view was never missing from the code.
+**Next:** Phase 2.4 — football-data.org fixtures + fixture-to-signal job.
+**Gotchas:** If Ask appears absent at runtime it is likely a stale Electron renderer cache. A fresh `dev.ps1` launch clears it.
+**Changed files:** SESSION_LOG.md
+
 ### 2026-04-25 — session 12
 **Goal:** Phase 2d — Fodder tracker, card tagger, and Ask LLM feature.
 

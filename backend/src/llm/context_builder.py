@@ -132,26 +132,41 @@ def _price_context(con: sqlite3.Connection, card_id: int, platform: str) -> dict
 # ---------------------------------------------------------------------------
 
 def _fodder_context(con: sqlite3.Connection, text: str, platform: str) -> list[dict[str, Any]]:
-    """Return fodder snapshots for any ratings 82-91 mentioned in text."""
+    """Return fodder snapshots (with top-card details) for any ratings 81-93 mentioned in text."""
     import re
-    rating_matches = re.findall(r"(?<!\d)(8[2-9]|9[01])(?!\d)", text)
+    rating_matches = re.findall(r"(?<!\d)(8[1-9]|9[0-3])(?!\d)", text)
     ratings = list({int(r) for r in rating_matches})
     results = []
     for rating in sorted(ratings):
-        row = con.execute(
-            """SELECT cheapest_bin, second_cheapest_bin, median_bin, ts_utc
+        snap = con.execute(
+            """SELECT id, cheapest_bin, second_cheapest_bin, median_bin, ts_utc
                FROM fodder_snapshots
                WHERE rating=? AND platform=? ORDER BY ts_utc DESC LIMIT 1""",
             (rating, platform),
         ).fetchone()
-        if row:
-            results.append({
-                "rating": rating,
-                "cheapest_bin": row[0],
-                "second_cheapest_bin": row[1],
-                "median_bin": row[2],
-                "last_updated": row[3],
-            })
+        if not snap:
+            continue
+        snap_id, cheapest_bin, second_cheapest_bin, median_bin, last_updated = snap
+        cards = con.execute(
+            """SELECT player_name, position, club_name, nation_name, card_version, bin_price, rank_in_rating
+               FROM fodder_cards
+               WHERE snapshot_id=? ORDER BY rank_in_rating ASC LIMIT 10""",
+            (snap_id,),
+        ).fetchall()
+        results.append({
+            "rating": rating,
+            "cheapest_bin": cheapest_bin,
+            "second_cheapest_bin": second_cheapest_bin,
+            "median_bin": median_bin,
+            "last_updated": last_updated,
+            "top_cards": [
+                {
+                    "rank": r[6], "player_name": r[0], "position": r[1],
+                    "club": r[2], "nation": r[3], "version": r[4], "price": r[5],
+                }
+                for r in cards
+            ],
+        })
     return results
 
 

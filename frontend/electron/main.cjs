@@ -3,7 +3,8 @@ const path = require('path');
 const { spawn, execSync } = require('child_process');
 const fs = require('fs');
 const { getTopMovers, searchCards, getCardDetail, getScraperHealth, getRecentSignals,
-        getFodderSummary, getFodderSnapshot, getLLMHistory } = require('./db-queries.cjs');
+        getFodderSummary, getFodderSnapshot, getFodderByRating, getFodderHistory,
+        getLLMHistory } = require('./db-queries.cjs');
 
 app.setName('FCPriceMaster');
 
@@ -387,8 +388,10 @@ ipcMain.handle('db:searchCards',  (_e, opts) => searchCards(openDb(), opts));
 ipcMain.handle('db:getCardDetail', (_e, opts) => getCardDetail(openDb(), opts));
 ipcMain.handle('db:getScraperHealth', (_e, opts) => getScraperHealth(openDb(), opts));
 ipcMain.handle('db:getRecentSignals', (_e, opts) => getRecentSignals(openDb(), opts));
-ipcMain.handle('db:getFodderSummary', (_e, opts) => getFodderSummary(openDb(), opts));
-ipcMain.handle('db:getFodderSnapshot', (_e, opts) => getFodderSnapshot(openDb(), opts));
+ipcMain.handle('db:getFodderSummary',   (_e, opts) => getFodderSummary(openDb(), opts));
+ipcMain.handle('db:getFodderSnapshot',  (_e, opts) => getFodderSnapshot(openDb(), opts));
+ipcMain.handle('db:getFodderByRating',  (_e, opts) => getFodderByRating(openDb(), opts));
+ipcMain.handle('db:getFodderHistory',   (_e, opts) => getFodderHistory(openDb(), opts));
 ipcMain.handle('db:getLLMHistory', (_e, opts) => getLLMHistory(openWriteDb(), opts));
 
 ipcMain.handle('db:askLLM', async (_e, { text, platform }) => {
@@ -470,6 +473,8 @@ if (isSelfTest) {
       const signals      = getRecentSignals(db, { hoursBack: 168, limit: 10 });
       const fodderSum    = getFodderSummary(db, { platform: 'pc' });
       const fodderSnap   = getFodderSnapshot(db, { rating: 85, platform: 'pc', hoursBack: 168 });
+      const fodderCards  = getFodderByRating(db, { rating: 85, platform: 'pc', limit: 10 });
+      const fodderHist   = getFodderHistory(db,  { rating: 85, platform: 'pc', hoursBack: 168 });
       const llmHistory   = getLLMHistory(openWriteDb(), { limit: 5 });
 
       const result = {
@@ -481,8 +486,10 @@ if (isSelfTest) {
           getCardDetail:   { card_key: 'mbappe-toty-fc26', snapshots: cardDetail?.snapshots?.length ?? 0, attrs: cardDetail?.attrs?.length ?? 0 },
           getScraperHealth:{ count: health.length, rows: health },
           getRecentSignals:{ count: signals.length, rows: signals },
-          getFodderSummary:{ platform: 'pc', count: fodderSum.length },
+          getFodderSummary: { platform: 'pc', count: fodderSum.length },
           getFodderSnapshot:{ rating: 85, count: fodderSnap.length },
+          getFodderByRating:{ rating: 85, count: fodderCards.length },
+          getFodderHistory: { rating: 85, count: fodderHist.length },
           getLLMHistory:   { count: llmHistory.length },
         },
       };

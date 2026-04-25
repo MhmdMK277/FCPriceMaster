@@ -109,9 +109,10 @@ def seed_card_aliases(db_path: str) -> int:
         con.close()
 
 
-def run_tagging(db_path: str, batch_size: int = _BATCH_SIZE) -> int:
+def run_tagging(db_path: str, batch_size: int = _BATCH_SIZE) -> tuple[int, list[str]]:
     """
-    Tag unprocessed signals. Returns count of signals tagged.
+    Tag unprocessed signals. Returns (count_tagged, card_keys_newly_tagged).
+    card_keys_newly_tagged is used by the async job to trigger on-demand price fetches.
     """
     try:
         from rapidfuzz import fuzz, process as rfprocess
@@ -132,7 +133,7 @@ def run_tagging(db_path: str, batch_size: int = _BATCH_SIZE) -> int:
         alias_keys = list(aliases.keys())
 
         if not alias_keys:
-            return 0
+            return 0, []
 
         # Fetch untagged signals
         signals = con.execute(
@@ -144,6 +145,7 @@ def run_tagging(db_path: str, batch_size: int = _BATCH_SIZE) -> int:
 
         tagged_count = 0
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        all_tagged_card_ids: set[int] = set()
 
         for signal_id, raw_text in signals:
             text_lower = raw_text.lower()
@@ -180,20 +182,42 @@ def run_tagging(db_path: str, batch_size: int = _BATCH_SIZE) -> int:
             )
             if found_cards:
                 tagged_count += 1
+                all_tagged_card_ids.update(found_cards)
+
+        # Resolve card_ids → card_keys for on-demand price fetching
+        newly_tagged_keys: list[str] = []
+        if all_tagged_card_ids:
+            placeholders = ",".join("?" * len(all_tagged_card_ids))
+            rows = con.execute(
+                f"SELECT card_key FROM cards WHERE id IN ({placeholders})",
+                list(all_tagged_card_ids),
+            ).fetchall()
+            newly_tagged_keys = [r[0] for r in rows]
 
         con.commit()
         logger.info("Tagged %d/%d signals with card matches", tagged_count, len(signals))
-        return tagged_count
+        return tagged_count, newly_tagged_keys
     finally:
         con.close()
 
 
 async def job_signal_tagger(db_path: str) -> None:
-    """APScheduler job wrapper for signal tagging."""
+    """APScheduler job wrapper for signal tagging + on-demand price fetch."""
     import asyncio
+    from src.scrapers.futgg import FutGGScraper
     try:
         loop = asyncio.get_running_loop()
-        count = await loop.run_in_executor(None, run_tagging, db_path)
+        count, newly_tagged_keys = await loop.run_in_executor(None, run_tagging, db_path)
         logger.info("JOB DONE   signal_tagger — %d signals tagged", count)
+
+        if not newly_tagged_keys:
+            return
+
+        # Fetch fresh prices for any newly-tagged card that is stale (> 2h old)
+        logger.info("signal_tagger: checking price freshness for %d card(s)", len(newly_tagged_keys))
+        async with FutGGScraper(db_path=db_path) as scraper:
+            for card_key in newly_tagged_keys:
+                for platform in ("pc", "console"):
+                    await scraper.fetch_card_on_demand(card_key, platform)  # type: ignore[arg-type]
     except Exception as exc:
         logger.error("JOB FAILED signal_tagger — %s: %s", type(exc).__name__, exc)

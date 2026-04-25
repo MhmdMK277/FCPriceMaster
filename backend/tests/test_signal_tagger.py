@@ -99,7 +99,7 @@ def test_run_tagging_tags_signal_with_card_mention(db_with_cards):
 
     # Seed aliases first
     seed_card_aliases(db_with_cards)
-    count = run_tagging(db_with_cards)
+    count, _ = run_tagging(db_with_cards)
     assert count >= 1
 
     con = sqlite3.connect(db_with_cards)
@@ -147,9 +147,10 @@ def test_run_tagging_skips_already_tagged(db_with_cards):
     con.close()
 
     seed_card_aliases(db_with_cards)
-    count = run_tagging(db_with_cards)
+    count, keys = run_tagging(db_with_cards)
     # sig-3 was pre-tagged, should not be processed
     assert count == 0
+    assert keys == []
 
 
 def test_run_tagging_skips_null_text(db_with_cards):
