@@ -42,6 +42,9 @@ BUY: Price is at or near a local low, upcoming demand catalyst exists (SBC, prom
 AVOID: Price is elevated above baseline due to hype or recent spike, likely to correct; or no clear catalyst for appreciation
 If neither clearly applies: respond with verdict="hold" and low confidence
 
+Important constraints:
+- Focus ONLY on events within the next 21 days. Do not reference the next FIFA/FC game launch (FC27) unless the horizon is explicitly "long (weeks)" AND the launch is within 90 days. Never cite a next-game launch as a reason for a medium or short-term trade.
+
 Respond in this exact JSON format:
 {
   "verdict": "buy" | "avoid" | "hold",
@@ -98,40 +101,114 @@ def _strip_fences(text: str) -> str:
 
 
 def _get_candidates(con: sqlite3.Connection, platform: str, limit: int = 20) -> list[dict[str, Any]]:
-    """Return top candidate cards: 3+ snapshots in last 48h, sorted by signal count + volatility."""
-    rows = con.execute(
+    """
+    3-pool candidate selection:
+      Pool A — cards mentioned in signals in the last 48h (up to 8)
+      Pool B — cards at or within 10% of their 7-day low (up to 8)
+      Pool C — trending cards with 3+ snapshots in 48h (fallback, up to remaining slots)
+    """
+    def _fetch_pool(sql: str, params: tuple, pool_limit: int, label: str) -> list[dict[str, Any]]:
+        rows = con.execute(sql, params).fetchall()
+        results = []
+        for r in rows[:pool_limit]:
+            results.append({
+                "card_id": r[0], "player_name": r[1], "version_name": r[2],
+                "card_key": r[3], "signal_count_24h": r[4], "_pool": label,
+            })
+        return results
+
+    pool_a = _fetch_pool(
         """
-        WITH eligible AS (
-            SELECT card_id, COUNT(*) AS snap_count
-            FROM price_snapshots
-            WHERE platform=? AND ts_utc >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-48 hours') AND bin_price IS NOT NULL
-            GROUP BY card_id
-            HAVING COUNT(*) >= 3
-        ),
-        sig_counts AS (
-            SELECT t.card_id, COUNT(*) AS sig_count
-            FROM signal_card_tags t
-            JOIN signals s ON s.id = t.signal_id
-            WHERE s.ts_utc >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-24 hours')
-            GROUP BY t.card_id
-        )
-        SELECT e.card_id, c.player_name, c.version_name, c.card_key,
-               COALESCE(sc.sig_count, 0) AS signal_count_24h
-        FROM eligible e
-        JOIN cards c ON c.id = e.card_id
-        LEFT JOIN sig_counts sc ON sc.card_id = e.card_id
-        ORDER BY COALESCE(sc.sig_count, 0) DESC
-        LIMIT ?
+        SELECT c.id, c.player_name, c.version_name, c.card_key,
+               COUNT(s.id) AS signal_count_24h
+        FROM cards c
+        JOIN signal_card_tags sct ON sct.card_id = c.id
+        JOIN signals s ON s.id = sct.signal_id
+        WHERE s.ts_utc >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-48 hours')
+        GROUP BY c.id
+        ORDER BY COUNT(s.id) DESC
         """,
-        (platform, limit),
+        (),
+        8,
+        "signal",
+    )
+
+    seen: set[int] = {c["card_id"] for c in pool_a}
+
+    pool_b_rows = con.execute(
+        """
+        SELECT card_id, platform,
+               MIN(bin_price) AS week_low,
+               (SELECT bin_price FROM price_snapshots p2
+                WHERE p2.card_id=p.card_id AND p2.platform=p.platform
+                ORDER BY ts_utc DESC LIMIT 1) AS current_price
+        FROM price_snapshots p
+        WHERE ts_utc >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-7 days')
+          AND platform=?
+          AND bin_price > 0
+        GROUP BY card_id, platform
+        HAVING current_price <= week_low * 1.10
+        ORDER BY (current_price * 1.0 / week_low) ASC
+        """,
+        (platform,),
     ).fetchall()
-    return [
-        {
-            "card_id": r[0], "player_name": r[1], "version_name": r[2],
-            "card_key": r[3], "signal_count_24h": r[4],
-        }
-        for r in rows
-    ]
+
+    pool_b: list[dict[str, Any]] = []
+    for r in pool_b_rows:
+        cid = r[0]
+        if cid in seen or len(pool_b) >= 8:
+            continue
+        card = con.execute(
+            "SELECT id, player_name, version_name, card_key FROM cards WHERE id=?", (cid,)
+        ).fetchone()
+        if not card:
+            continue
+        sig_count = con.execute(
+            """SELECT COUNT(*) FROM signal_card_tags t JOIN signals s ON s.id=t.signal_id
+               WHERE t.card_id=? AND s.ts_utc >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-24 hours')""",
+            (cid,),
+        ).fetchone()[0]
+        pool_b.append({
+            "card_id": card[0], "player_name": card[1], "version_name": card[2],
+            "card_key": card[3], "signal_count_24h": sig_count, "_pool": "7d_low",
+        })
+        seen.add(cid)
+
+    remaining = limit - len(pool_a) - len(pool_b)
+    pool_c: list[dict[str, Any]] = []
+    if remaining > 0:
+        pool_c = _fetch_pool(
+            """
+            WITH eligible AS (
+                SELECT card_id, COUNT(*) AS snap_count
+                FROM price_snapshots
+                WHERE platform=? AND ts_utc >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-48 hours')
+                  AND bin_price IS NOT NULL
+                GROUP BY card_id
+                HAVING COUNT(*) >= 3
+            ),
+            sig_counts AS (
+                SELECT t.card_id, COUNT(*) AS sig_count
+                FROM signal_card_tags t
+                JOIN signals s ON s.id = t.signal_id
+                WHERE s.ts_utc >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-24 hours')
+                GROUP BY t.card_id
+            )
+            SELECT e.card_id, c.player_name, c.version_name, c.card_key,
+                   COALESCE(sc.sig_count, 0) AS signal_count_24h
+            FROM eligible e
+            JOIN cards c ON c.id = e.card_id
+            LEFT JOIN sig_counts sc ON sc.card_id = e.card_id
+            WHERE e.card_id NOT IN ({placeholders})
+            ORDER BY COALESCE(sc.sig_count, 0) DESC
+            LIMIT ?
+            """.replace("{placeholders}", ",".join("?" * len(seen)) if seen else "SELECT -1"),
+            (platform, *seen, remaining) if seen else (platform, remaining),
+            remaining,
+            "trending",
+        )
+
+    return pool_a + pool_b + pool_c
 
 
 def _get_price_momentum(con: sqlite3.Connection, card_id: int, platform: str) -> dict[str, Any]:
@@ -293,7 +370,7 @@ def _insert_recommendation(
 # Card recommendations
 # ---------------------------------------------------------------------------
 
-def generate_recommendations(platform: str, db_path: str, max_recs: int = 10) -> list[dict[str, Any]]:
+def generate_recommendations(platform: str, db_path: str, max_recs: int = 5) -> list[dict[str, Any]]:
     """
     Generate autonomous buy/avoid recommendations for the given platform.
     Returns list of inserted recommendation dicts.
@@ -325,7 +402,7 @@ def generate_recommendations(platform: str, db_path: str, max_recs: int = 10) ->
         for card in candidates:
             card_id = card["card_id"]
 
-            if _has_recent_rec(con, card_id, platform, hours=6):
+            if _has_recent_rec(con, card_id, platform, hours=10):
                 logger.debug("Skipping %s — recent rec exists", card["player_name"])
                 continue
 

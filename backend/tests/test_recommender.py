@@ -95,18 +95,23 @@ def test_get_candidates_empty(db_with_cards):
     assert result == []
 
 
-def test_get_candidates_requires_three_snapshots(db_with_cards):
+def test_get_candidates_pool_b_with_two_snapshots(db_with_cards):
+    """Pool B (7d low) picks up a card with 2 snapshots at a stable price."""
     card_id = sqlite3.connect(db_with_cards).execute("SELECT id FROM cards LIMIT 1").fetchone()[0]
-    _add_snapshots(db_with_cards, card_id, "pc", 2)  # only 2 — below threshold
+    _add_snapshots(db_with_cards, card_id, "pc", 2)  # 2 snapshots at flat price
     con = sqlite3.connect(db_with_cards)
     result = _get_candidates(con, "pc")
     con.close()
-    assert result == []
+    # Pool B picks it up since current == week_low (within 10%)
+    assert len(result) == 1
+    assert result[0]["card_id"] == card_id
+    assert result[0]["_pool"] == "7d_low"
 
 
-def test_get_candidates_returns_eligible_cards(db_with_cards):
+def test_get_candidates_pool_c_requires_three_snapshots(db_with_cards):
+    """Pool C (trending fallback) requires 3+ snapshots in 48h; Pool B picks up flat-price cards anyway."""
     card_id = sqlite3.connect(db_with_cards).execute("SELECT id FROM cards LIMIT 1").fetchone()[0]
-    _add_snapshots(db_with_cards, card_id, "pc", 4)  # 4 snapshots — qualifies
+    _add_snapshots(db_with_cards, card_id, "pc", 4)  # 4 snapshots — qualifies in Pool B or C
     con = sqlite3.connect(db_with_cards)
     result = _get_candidates(con, "pc")
     con.close()

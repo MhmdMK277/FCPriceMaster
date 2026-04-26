@@ -213,12 +213,14 @@ def _calendar_context() -> dict[str, Any]:
         except (ValueError, TypeError):
             continue
 
+    # Only include promos starting within 21 days; cap at 3
+    upcoming = [
+        p for p in promo_context
+        if p["days_until_start"] is not None and p["days_until_start"] <= 21
+    ]
     return {
         "today": today.isoformat(),
-        "promos": sorted(
-            [p for p in promo_context if p["days_until_start"] is not None],
-            key=lambda p: p["days_until_start"],
-        )[:3],  # next 3 upcoming promos
+        "promos": sorted(upcoming, key=lambda p: p["days_until_start"])[:3],
     }
 
 

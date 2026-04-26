@@ -21,6 +21,39 @@ Required fields per entry: date, session number, goal, done, next, gotchas, chan
 
 <!-- Entries go below this line, newest first -->
 
+### 2026-04-27 — session 24
+**Goal:** Fix candidate selection (100% AVOID problem), suppress FC27 context in short/medium recs, audit and reduce LLM call costs, add "next eval" indicator to stats bar.
+
+**Done:**
+- `backend/src/llm/recommender.py` — `_get_candidates` replaced with 3-pool logic: Pool A (signal-mentioned cards, 48h window, up to 8), Pool B (near 7d low ≤110%, up to 8), Pool C (trending fallback with 3+ snapshots, fills remainder). Verified on live DB: 8 signal + 8 7d_low + 4 trending — Hall (TOTS Breakthrough) correctly surfaces with 57 signals.
+- `backend/src/llm/recommender.py` — `max_recs` default lowered from 10 → 5; `_has_recent_rec` guard raised from 6h → 10h to reduce per-card re-evaluation frequency.
+- `backend/src/llm/recommender.py` — FC27 suppression added to `_AUTONOMOUS_SYSTEM_PROMPT`: LLM instructed not to cite next-game launch unless horizon is "long (weeks)" AND launch <90 days away.
+- `backend/src/llm/context_builder.py` — `_calendar_context` now only includes promos with `days_until_start <= 21`; September FC27 launch no longer included in April/May context.
+- `frontend/electron/db-queries.cjs` — `getRecommendationStats` now returns `next_eval_in_hours` (6 − hours since last outcome write) and `oldest_pending_hours`.
+- `frontend/src/views/Recommendations.tsx` — stats bar shows "Next eval: in Xh" and "Oldest pending: Yh old".
+- `backend/tests/test_recommender.py` — updated 2 candidate tests to reflect new 3-pool behaviour (Pool B picks up flat-price cards even with <3 snapshots).
+- 123/123 tests pass.
+
+**Cost audit:**
+- Yesterday (2026-04-26): 292 autonomous calls, $0.1252. This was expected for a first full day (max_recs=10, 6h guard, both platforms × every 2h = ~24 runs × ~12 calls).
+- Expected with fixes: max_recs=5, 10h guard → ~4 eligible runs/day per card → ~5 card + ~2 fodder = 7 calls/run × ~10 distinct runs/day ≈ 70 calls/day ≈ $0.030/day.
+- Call distribution by hour yesterday: spread across 05-22 UTC, 4-38 calls/hour — no runaway, just high base rate from max_recs=10.
+
+**Next:** Let scheduler accumulate recs with new candidate logic for 24h. Verify that buy verdicts start appearing (Pool B near-7d-low cards). Then do UI sign-off walk-through (Phase 3 exit).
+
+**Gotchas:**
+- Pool B SQL subquery uses a correlated subquery for current_price — works correctly in SQLite but slow if cards table is large. Not a concern at current scale (<500 cards).
+- Pool C SQL uses `WHERE e.card_id NOT IN (...)` with dynamic placeholders; empty `seen` set handled by fallback `SELECT -1` to avoid syntax error.
+
+**Changed files:**
+- `backend/src/llm/recommender.py`
+- `backend/src/llm/context_builder.py`
+- `frontend/electron/db-queries.cjs`
+- `frontend/src/views/Recommendations.tsx`
+- `backend/tests/test_recommender.py`
+- `ROADMAP.md`
+- `SESSION_LOG.md`
+
 ### 2026-04-26 — session 23
 **Goal:** Phase 3 — autonomous recommendations engine: scheduler jobs, outcome evaluator, IPC handlers, Recommendations view, FastAPI-lite HTTP trigger.
 

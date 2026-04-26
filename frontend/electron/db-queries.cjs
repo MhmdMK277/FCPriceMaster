@@ -249,7 +249,32 @@ function getRecommendationStats(db, { days = 7 } = {}) {
     const accuracy_pct = total_evaluated > 0
       ? Math.round(100 * correct / (correct + incorrect || 1))
       : null;
-    return { total_evaluated, correct, incorrect, neutral, accuracy_pct, buy_total, avoid_total };
+
+    // Time since last outcome_evaluator run (evaluator fires every 6h)
+    const lastEvalRow = db.prepare(
+      `SELECT MAX(evaluated_at_utc) as last_eval FROM outcomes`
+    ).get();
+    let next_eval_in_hours = null;
+    if (lastEvalRow && lastEvalRow.last_eval) {
+      const hoursSince = (Date.now() - new Date(lastEvalRow.last_eval + 'Z').getTime()) / 3600000;
+      next_eval_in_hours = Math.max(0, Math.round(6 - hoursSince));
+    }
+
+    // Oldest active recommendation with no outcome yet
+    const oldestRow = db.prepare(
+      `SELECT MIN(ts_utc) as oldest_ts FROM recommendations
+       WHERE dismissed_at IS NULL
+         AND NOT EXISTS (SELECT 1 FROM outcomes WHERE recommendation_id = recommendations.id)`
+    ).get();
+    let oldest_pending_hours = null;
+    if (oldestRow && oldestRow.oldest_ts) {
+      oldest_pending_hours = Math.round(
+        (Date.now() - new Date(oldestRow.oldest_ts + 'Z').getTime()) / 3600000
+      );
+    }
+
+    return { total_evaluated, correct, incorrect, neutral, accuracy_pct, buy_total, avoid_total,
+             next_eval_in_hours, oldest_pending_hours };
   } catch { return null; }
 }
 

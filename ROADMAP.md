@@ -148,7 +148,7 @@ Update status at the end of every session. Do not skip ahead — finish the curr
 ---
 
 ## Phase 3 — Autonomous recommendations
-**Status:** In progress (session 23). Seeding outcome data now.
+**Status:** In progress (session 24). Cost + candidate quality fixes applied.
 
 - [x] `generate_recommendations(platform, db_path, max_recs)` — selects top 20 candidates (3+ snapshots/48h, ranked by signal count), calls Claude Haiku, filters confidence<60 + holds, inserts buys/avoids
 - [x] Fodder sweep (ratings 82-91) — within 10% of 7d low + promo in 14 days
@@ -157,6 +157,7 @@ Update status at the end of every session. Do not skip ahead — finish the curr
 - [x] HTTP trigger server on 127.0.0.1:8765 (POST /run-recommendations) for UI-initiated runs
 - [x] IPC handlers: getRecommendations, dismissRecommendation, getRecommendationStats, triggerRecommendations
 - [x] Recommendations view in UI: stats bar, buy/avoid cards, dismiss, outcome badge, auto-refresh 60s
+- [x] **Session 24:** 3-pool candidate selection (Pool A: signal-mentioned, Pool B: near 7d low, Pool C: trending fallback); max_recs=5; recent_rec guard raised to 10h; calendar promo filter 21d; FC27 context suppressed for non-long horizons; stats bar shows "next eval in Xh" + "oldest pending Yh"
 - [ ] Walk through UI with owner sign-off
 - [ ] Accumulate ≥500 outcomes to seed Phase 4 classifier
 

@@ -23,6 +23,8 @@ interface RecStats {
   accuracy_pct: number | null;
   buy_total: number;
   avoid_total: number;
+  next_eval_in_hours: number | null;
+  oldest_pending_hours: number | null;
 }
 
 const CALL_COLORS: Record<string, string> = {
@@ -142,6 +144,14 @@ export function Recommendations({ platform }: { platform: string }) {
           )}
           <span>Buys: <strong style={{ color: '#22c55e' }}>{stats.buy_total}</strong></span>
           <span>Avoids: <strong style={{ color: '#ef4444' }}>{stats.avoid_total}</strong></span>
+          {stats.next_eval_in_hours !== null && (
+            <span style={{ marginLeft: 'auto' }}>
+              Next eval: <strong style={{ color: '#f1f5f9' }}>in {stats.next_eval_in_hours}h</strong>
+            </span>
+          )}
+          {stats.oldest_pending_hours !== null && (
+            <span>Oldest pending: <strong style={{ color: '#f1f5f9' }}>{stats.oldest_pending_hours}h old</strong></span>
+          )}
         </div>
       )}
 
