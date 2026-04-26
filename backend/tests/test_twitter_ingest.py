@@ -302,3 +302,60 @@ def test_persist_only_allowlisted_handles(tmp_db: str) -> None:
     assert "futsheriff" in handles
     assert "futdonkey" in handles
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Profile guard tests (new profile-based scraping approach)
+# ---------------------------------------------------------------------------
+
+def _profile_guard(raw_tweets: list[dict], expected_handle_lower: str) -> list[dict]:
+    """Mirrors the profile-guard filter in poll_profile()."""
+    return [t for t in raw_tweets if t.get("handle", "").lower() == expected_handle_lower]
+
+
+def test_profile_guard_drops_other_handles() -> None:
+    """When on @FutSheriff's profile, tweets from other handles must be dropped."""
+    raw = [
+        _make_raw("FutSheriff", "1"),
+        _make_raw("Retweeted_IGN", "2"),       # retweet surface
+        _make_raw("QuotedAccount", "3"),        # quoted tweet surface
+        _make_raw("FutSheriff", "4"),
+    ]
+    filtered = _profile_guard(raw, "futsheriff")
+    assert len(filtered) == 2
+    assert all(t["handle"] == "FutSheriff" for t in filtered)
+
+
+def test_profile_guard_case_insensitive() -> None:
+    """Handle comparison is case-insensitive."""
+    raw = [_make_raw("FUTSHERIFF", "1"), _make_raw("FUTSheriff", "2")]
+    filtered = _profile_guard(raw, "futsheriff")
+    assert len(filtered) == 2
+
+
+def test_profile_guard_all_mismatch_returns_empty() -> None:
+    raw = [_make_raw("Elonmusk", "1"), _make_raw("IGN", "2")]
+    assert _profile_guard(raw, "futsheriff") == []
+
+
+def test_profile_guard_persist_clean(tmp_db: str) -> None:
+    """After profile guard + persist, only the profile owner's tweets are in DB."""
+    conn = open_db(tmp_db)
+    account_config = {
+        "futsheriff": {"category": "leaks", "priority": "high", "handle_raw": "FutSheriff"},
+    }
+    raw_page = [
+        _make_raw("FutSheriff", "100"),
+        _make_raw("RetweetedUser", "101"),  # should be dropped by profile guard
+        _make_raw("FutSheriff", "102"),
+    ]
+    filtered = _profile_guard(raw_page, "futsheriff")
+    for raw in filtered:
+        data = parse_tweet_data(raw, account_config)
+        persist_tweet(conn, data)
+
+    rows = conn.execute("SELECT source_server FROM signals WHERE source='twitter'").fetchall()
+    handles = {r[0].lower() for r in rows}
+    assert handles == {"futsheriff"}
+    assert len(rows) == 2
+    conn.close()

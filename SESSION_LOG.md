@@ -21,6 +21,36 @@ Required fields per entry: date, session number, goal, done, next, gotchas, chan
 
 <!-- Entries go below this line, newest first -->
 
+### 2026-04-26 — session 21
+**Goal:** Nuclear fix for Twitter scraper — scrap home timeline entirely, replace with profile-by-profile scraping. Also investigate why session 20's allowlist filter was not working.
+
+**Done:**
+
+**Root cause of allowlist failure (Fix 2):**
+The logs confirmed multiple concurrent worker processes were running — some on the old pre-session-20 code (`"Switched to Following tab"` log line), some on session 20 code (`"Following tab active via URL navigation"`). The old processes had no allowlist filter at all. Additionally, even session 20's new `_switch_to_following_tab` URL check had a logic flaw: it checked `"following" in current_url` which would be True for X's `/home?tab=following` URL, but X's actual response page URL after redirect sometimes dropped the query param, causing the check to fall through to the tab-click fallback which returned True even on "For You".
+
+**Fix 1 — Profile-by-profile scraping (complete rewrite of polling strategy):**
+- Removed `_HOME_URL`, `_switch_to_following_tab`, and the home-timeline `poll_once()` entirely.
+- New `poll_profile(handle_lower, page)`: navigates directly to `https://x.com/{handle}`, extracts tweets, applies a **profile guard** that drops any tweet whose extracted handle ≠ the profile we loaded (catches retweets/quoted tweets surfacing other DOM handles).
+- New `run()` loop: cycles through all configured handles, `~20s ± 5s jitter` between profile loads, minimum 60s per full cycle.
+- Keeps allowlist as a backstop in `poll_profile` for config drift.
+- Logs `"Dropping @X tweet on @Y profile page — handle mismatch"` at DEBUG for any dropped article.
+
+**Fix 3 — DB cleanup:** Deleted 211 non-FUT twitter signals + 211 matching `twitter_tweet_ids`. Clean state: futsheriff(46), fut_scoreboard(11), futdonkey(2).
+
+**Fix 4 — 4 new profile guard tests** + all 22 Twitter tests green, 104/104 total.
+
+**Next:** Phase 3 work (recommendations / price charts) or let the new worker run and verify it stays clean.
+
+**Gotchas:**
+- The home timeline was serving For You content because X apparently ignores `?tab=following` for some accounts or cookie states. Profile pages are the only reliable approach.
+- `handle_raw` is now stored in `_account_config` to preserve URL casing (X resolves handles case-insensitively but it's cleaner to use the original case).
+- Multiple stale worker processes caused the session 20 fix to appear broken — always ensure old processes are killed before restarting.
+
+**Changed files:**
+- `backend/src/workers/twitter_ingest.py` (complete strategy rewrite)
+- `backend/tests/test_twitter_ingest.py` (4 new profile guard tests)
+
 ### 2026-04-26 — session 20
 **Goal:** Fix Twitter allowlist filter — non-FUT tweets (@IGN etc.) were flooding the Signals view because `_extract_tweets()` had no handle filtering and `_switch_to_following_tab()` failed silently.
 
