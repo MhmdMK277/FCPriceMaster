@@ -21,6 +21,74 @@ Required fields per entry: date, session number, goal, done, next, gotchas, chan
 
 <!-- Entries go below this line, newest first -->
 
+### 2026-04-26 — session 23
+**Goal:** Phase 3 — autonomous recommendations engine: scheduler jobs, outcome evaluator, IPC handlers, Recommendations view, FastAPI-lite HTTP trigger.
+
+**Done:**
+- `backend/src/db/migrations/0006_recommendations_phase3.sql` — recreates recommendations table with nullable card_id (for fodder recs) and adds `dismissed_at` column; adds idx_outcomes_rec.
+- `backend/src/llm/recommender.py` — `generate_recommendations(platform, db_path, max_recs)` selects top 20 candidates (3+ snapshots in 48h, ranked by signal count), calls Claude Haiku per card, filters confidence<60 and hold verdicts, inserts buys/avoids. Includes fodder sweep (82-91, within 10% of 7d low + promo in 14 days). `evaluate_outcomes(db_path)` evaluates recs >24h old: correct/incorrect/neutral/expired.
+- `backend/src/workers/scheduler.py` — added `job_recommendations` (every 2h, PC at +10min, Console at +70min), `job_outcome_evaluator` (every 6h), and `_http_trigger_server` (asyncio TCP server on 127.0.0.1:8765 for POST /run-recommendations UI trigger).
+- `frontend/electron/db-queries.cjs` — added `getRecommendations`, `dismissRecommendation`, `getRecommendationStats`.
+- `frontend/electron/preload.cjs` — exposed 4 new IPC methods.
+- `frontend/electron/main.cjs` — registered IPC handlers; `triggerRecommendations` fetches localhost:8765; selftest extended.
+- `frontend/src/views/Recommendations.tsx` — new view: stats bar, rec cards with colour-coded left border (buy=green, avoid=red), dismiss button, outcome badge, auto-refresh 60s.
+- `frontend/src/App.tsx` — added Recommendations nav item (first in sidebar) and conditional render.
+- `backend/tests/test_recommender.py` — 19 new tests: candidate selection, horizon parsing, recent-rec guard, outcome evaluator (correct/incorrect/neutral/not-reevaluated/too-new), generate_recommendations with mocked LLM.
+- 123/123 tests pass (was 104).
+- Migration applied to live DB.
+- Verification run: `generate_recommendations('pc', ..., max_recs=5)` → 5 real avoid calls (Cherki, Messi, Shaw, Donnarumma, Mbeumo). All TOTS cards on downtrend with no near-term catalysts. Cost: $0.003014 for 7 LLM calls (5 cards + 2 fodder checks). ✓
+- Outcome evaluator ran cleanly (0 outcomes — all recs <24h old). ✓
+- Electron selftest exits 0; `getRecommendations` returns 5 rows with correct shape. ✓
+
+**Actual LLM verdicts from verification run (7a verbatim):**
+1. Cherki (TOTS PC) → AVOID 78% — crashed 19.6% in 24h from 280k to 225k, TOTS pack saturation, no near-term catalyst.
+2. Messi (TOTS PC) → AVOID 78% — spiked 5% to 10.5M on pack pull signals, momentum rally not fundamental, FC27 152 days away.
+3. Shaw (TOTS PC) → AVOID 85% — crashed 22.8% in 24h following competing SBC release, heavy supply phase.
+4. Donnarumma (TOTS PC) → AVOID 78% — active downtrend -15.4% post-SBC completion, supply influx.
+5. Mbeumo (TOTS HM PC) → AVOID 78% — -4.3% in 24h, TOTS SBC continuously generating supply, 580k target.
+
+**Next:** Let the recommender run for 24h to accumulate data, then verify outcome evaluator marks recs correctly. Then Phase 3 exit: walk through the Recommendations view in the UI.
+
+**Gotchas:**
+- SQLite `datetime('now', '-N hours')` returns space-separated format (`2026-04-25 05:54:10`) but all `ts_utc` values in the DB use ISO-8601 T-format (`2026-04-25T05:54:10Z`). String comparison fails silently — `T` (0x54) > ` ` (0x20) so T-format timestamps sort AFTER space-format, causing `ts_utc <= datetime('now', ...)` to always be FALSE. Fix: use `strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ...)` throughout recommender.py, OR pass Python-computed cutoff strings as parameters.
+- This latent bug exists in context_builder.py too (e.g., `AND ts_utc <= datetime('now', '-24 hours')`) but doesn't break existing tests because those test fixtures use SQLite `datetime('now', ?)` for inserting timestamps (same space format), so both sides match. Only breaks when Python strftime inserts T-format and SQLite datetime compares.
+- The `_http_trigger_server` uses `asyncio.create_task` after `scheduler.start()` — must be inside the `run()` async function, not in `build_scheduler`, to have access to the running event loop.
+
+**Changed files:**
+- `backend/src/db/migrations/0006_recommendations_phase3.sql` (new)
+- `backend/src/llm/recommender.py` (new)
+- `backend/tests/test_recommender.py` (new)
+- `frontend/src/views/Recommendations.tsx` (new)
+- `backend/src/workers/scheduler.py`
+- `frontend/electron/db-queries.cjs`
+- `frontend/electron/preload.cjs`
+- `frontend/electron/main.cjs`
+- `frontend/src/App.tsx`
+
+### 2026-04-26 — session 22
+**Goal:** Final Twitter fix — correct handle list in yaml, hardcoded allowlist as last-resort safety net in `persist_tweet()`, nuke all existing Twitter signals, verify only 7 correct handles in DB.
+
+**Done:**
+- Killed all stale python/node/electron/chromium processes before touching any code.
+- Replaced `config/twitter_accounts.yaml` with the 7 confirmed handles: FutSheriff, Fut_scoreboard, Futdonk, FIFA22_INFO, Jake_FutTrading, UTSources, FC26News_.
+- Added `_HARDCODED_ALLOWLIST` set in `twitter_ingest.py` — `persist_tweet()` now returns None immediately if `data["handle"].lower()` is not in that set, regardless of what the yaml says or what profiles were visited.
+- Added `logger.info("Visiting profile: %s", url)` in `poll_profile()` for auditability.
+- Nuked all Twitter signals (DELETE from signal_attachments, twitter_tweet_ids, signals). DB was clean (0 signals) before worker restart.
+- Ran worker for ~3 minutes. Log showed exactly 7 URLs visited (https://x.com/{handle}), no others. DB after first cycle: exactly 7 distinct handles, 31 signals total. Zero garbage.
+- Updated tests: all `FUTDonkey`/`futdonkey` references renamed to `Futdonk`/`futdonk` to match new allowlist.
+- 104/104 tests pass.
+
+**Next:** Phase 3 work (recommendations engine or price history charts). Worker is clean and stable.
+
+**Gotchas:**
+- Old yaml had `FUT_Scoreboard` and `FUTDonkey` — X resolves handles case-insensitively but the hardcoded allowlist must use lowercase forms matching the yaml. New yaml uses `Fut_scoreboard` and `Futdonk`; allowlist uses `fut_scoreboard` and `futdonk`.
+- `persist_tweet()` is called directly in tests without going through the profile scraper; tests that pass non-allowlisted handles will get `None` back — tests updated accordingly.
+
+**Changed files:**
+- `config/twitter_accounts.yaml`
+- `backend/src/workers/twitter_ingest.py`
+- `backend/tests/test_twitter_ingest.py`
+
 ### 2026-04-26 — session 21
 **Goal:** Nuclear fix for Twitter scraper — scrap home timeline entirely, replace with profile-by-profile scraping. Also investigate why session 20's allowlist filter was not working.
 

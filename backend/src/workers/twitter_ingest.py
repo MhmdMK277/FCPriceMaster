@@ -50,6 +50,12 @@ _stealth = _Stealth()
 
 logger = logging.getLogger(__name__)
 
+# Hardcoded safety net — tweets from handles NOT in this set are NEVER saved
+_HARDCODED_ALLOWLIST = {
+    "futsheriff", "fut_scoreboard", "futdonk",
+    "fifa22_info", "jake_futtrading", "utsources", "fc26news_",
+}
+
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -186,6 +192,10 @@ def persist_tweet(conn: sqlite3.Connection, data: dict[str, Any]) -> int | None:
     Atomically insert tweet signal. Returns signal_id or None (dedup).
     Uses BEGIN IMMEDIATE to prevent concurrent insert races.
     """
+    if data["handle"].lower() not in _HARDCODED_ALLOWLIST:
+        logger.debug("BLOCKED tweet from @%s — not in hardcoded allowlist", data["handle"])
+        return None
+
     tweet_id = data["tweet_id"]
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -410,6 +420,7 @@ class TwitterIngestWorker:
         # Use original casing for URL so X resolves it correctly
         handle_raw = meta.get("handle_raw", handle_lower)
         url = _PROFILE_BASE_URL.format(handle=handle_raw)
+        logger.info("Visiting profile: %s", url)
 
         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(3000)

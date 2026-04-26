@@ -29,6 +29,7 @@ from src.scrapers.futgg import FutGGScraper
 from src.workers.reddit_ingest import job_reddit_new, job_reddit_hot
 from src.workers.ea_ingest import job_ea_news
 from src.workers.signal_tagger import job_signal_tagger
+from src.llm.recommender import generate_recommendations, evaluate_outcomes
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -103,6 +104,29 @@ async def job_fodder_sweep(scraper: FutGGScraper, db_path: str) -> None:  # noqa
     except Exception as exc:
         elapsed = (datetime.now(timezone.utc) - start).total_seconds()
         logger.error("JOB FAILED fodder_sweep after %.1fs — %s: %s", elapsed, type(exc).__name__, exc)
+
+
+async def job_recommendations(platform: str, db_path: str) -> None:
+    """Generate autonomous recommendations for one platform."""
+    start = datetime.now(timezone.utc)
+    logger.info("JOB START  recommendations_%s", platform)
+    try:
+        recs = await asyncio.to_thread(generate_recommendations, platform, db_path)
+        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+        logger.info("JOB DONE   recommendations_%s — %d recs in %.1fs", platform, len(recs), elapsed)
+    except Exception as exc:
+        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+        logger.error("JOB FAILED recommendations_%s after %.1fs — %s: %s", platform, elapsed, type(exc).__name__, exc)
+
+
+async def job_outcome_evaluator(db_path: str) -> None:
+    """Evaluate recommendations older than 24h with no outcome."""
+    logger.info("JOB START  outcome_evaluator")
+    try:
+        count = await asyncio.to_thread(evaluate_outcomes, db_path)
+        logger.info("JOB DONE   outcome_evaluator — %d outcomes written", count)
+    except Exception as exc:
+        logger.error("JOB FAILED outcome_evaluator — %s: %s", type(exc).__name__, exc)
 
 
 async def job_prune_health(db_path: str) -> None:
@@ -238,12 +262,97 @@ def build_scheduler(
         max_instances=1,
     )
 
+    scheduler.add_job(
+        job_recommendations,
+        trigger=IntervalTrigger(hours=2, timezone="UTC"),
+        args=["pc", db_path],
+        id="recommendations_pc",
+        name="Autonomous recommendations — PC",
+        next_run_time=now + timedelta(minutes=10),
+        misfire_grace_time=3600,
+        coalesce=True,
+        max_instances=1,
+    )
+
+    scheduler.add_job(
+        job_recommendations,
+        trigger=IntervalTrigger(hours=2, start_date=now + timedelta(hours=1), timezone="UTC"),
+        args=["console", db_path],
+        id="recommendations_console",
+        name="Autonomous recommendations — Console",
+        next_run_time=now + timedelta(minutes=70),
+        misfire_grace_time=3600,
+        coalesce=True,
+        max_instances=1,
+    )
+
+    scheduler.add_job(
+        job_outcome_evaluator,
+        trigger=IntervalTrigger(hours=6, timezone="UTC"),
+        args=[db_path],
+        id="outcome_evaluator",
+        name="Recommendation outcome evaluator",
+        next_run_time=now + timedelta(hours=6),
+        misfire_grace_time=3600,
+        coalesce=True,
+        max_instances=1,
+    )
+
     return scheduler
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
+async def _http_trigger_server(db_path: str) -> None:
+    """Minimal asyncio HTTP server on port 8765 for UI-triggered recommendation runs."""
+    async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            data = await asyncio.wait_for(reader.read(2048), timeout=5.0)
+            text = data.decode("utf-8", errors="replace")
+            first_line = text.split("\r\n")[0]
+            if "POST /run-recommendations" in first_line:
+                body_start = data.find(b"\r\n\r\n")
+                body = data[body_start + 4:].decode("utf-8", errors="replace") if body_start >= 0 else ""
+                platform = "pc"
+                try:
+                    import json as _json
+                    payload = _json.loads(body)
+                    platform = payload.get("platform", "pc")
+                except Exception:
+                    pass
+                logger.info("HTTP trigger: run-recommendations for %s", platform)
+                asyncio.create_task(_run_recs_task(platform, db_path))
+                resp_body = b'{"status":"ok"}'
+                resp = (
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                    b"Access-Control-Allow-Origin: *\r\nContent-Length: 15\r\n\r\n"
+                ) + resp_body
+            else:
+                resp = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"
+            writer.write(resp)
+            await writer.drain()
+        except Exception as exc:
+            logger.debug("HTTP server error: %s", exc)
+        finally:
+            writer.close()
+
+    async def _run_recs_task(platform: str, db_path: str) -> None:
+        try:
+            recs = await asyncio.to_thread(generate_recommendations, platform, db_path)
+            logger.info("Manual trigger done: %d recs for %s", len(recs), platform)
+        except Exception as exc:
+            logger.error("Manual trigger failed for %s: %s", platform, exc)
+
+    try:
+        server = await asyncio.start_server(_handle, "127.0.0.1", 8765)
+        logger.info("HTTP trigger server listening on 127.0.0.1:8765")
+        async with server:
+            await server.serve_forever()
+    except Exception as exc:
+        logger.error("HTTP trigger server failed to start: %s", exc)
+
 
 async def run(db_path: str = _DB_PATH) -> None:
     """Start the scheduler and block until SIGINT/SIGTERM."""
@@ -257,6 +366,7 @@ async def run(db_path: str = _DB_PATH) -> None:
 
     scheduler = build_scheduler(scraper, db_path)
     scheduler.start()
+    asyncio.create_task(_http_trigger_server(db_path))
 
     for job in scheduler.get_jobs():
         logger.info("  registered: %-40s next=%s", job.name, job.next_run_time)

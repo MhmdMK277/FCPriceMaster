@@ -4,7 +4,8 @@ const { spawn, execSync } = require('child_process');
 const fs = require('fs');
 const { getTopMovers, searchCards, getCardDetail, getScraperHealth, getRecentSignals,
         getFodderSummary, getFodderSnapshot, getFodderByRating, getFodderHistory,
-        getLLMHistory } = require('./db-queries.cjs');
+        getLLMHistory,
+        getRecommendations, dismissRecommendation, getRecommendationStats } = require('./db-queries.cjs');
 
 app.setName('FCPriceMaster');
 
@@ -393,6 +394,24 @@ ipcMain.handle('db:getFodderSnapshot',  (_e, opts) => getFodderSnapshot(openDb()
 ipcMain.handle('db:getFodderByRating',  (_e, opts) => getFodderByRating(openDb(), opts));
 ipcMain.handle('db:getFodderHistory',   (_e, opts) => getFodderHistory(openDb(), opts));
 ipcMain.handle('db:getLLMHistory', (_e, opts) => getLLMHistory(openWriteDb(), opts));
+ipcMain.handle('db:getRecommendations',     (_e, opts) => getRecommendations(openDb(), opts));
+ipcMain.handle('db:dismissRecommendation',  (_e, opts) => dismissRecommendation(openWriteDb(), opts));
+ipcMain.handle('db:getRecommendationStats', (_e, opts) => getRecommendationStats(openDb(), opts));
+
+ipcMain.handle('db:triggerRecommendations', async (_e, { platform } = {}) => {
+  try {
+    const body = JSON.stringify({ platform: platform || 'pc' });
+    const res = await fetch('http://127.0.0.1:8765/run-recommendations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+    if (!res.ok) return { error: `HTTP ${res.status}` };
+    return await res.json();
+  } catch (e) {
+    return { error: e.message };
+  }
+});
 
 ipcMain.handle('db:askLLM', async (_e, { text, platform }) => {
   const apiKey = getAnthropicKey();
@@ -476,6 +495,8 @@ if (isSelfTest) {
       const fodderCards  = getFodderByRating(db, { rating: 85, platform: 'pc', limit: 10 });
       const fodderHist   = getFodderHistory(db,  { rating: 85, platform: 'pc', hoursBack: 168 });
       const llmHistory   = getLLMHistory(openWriteDb(), { limit: 5 });
+      const recsList     = getRecommendations(openDb(), { platform: 'pc', limit: 10, activeOnly: true });
+      const recsStats    = getRecommendationStats(openDb(), { days: 7 });
 
       const result = {
         selftest: true,
@@ -490,7 +511,9 @@ if (isSelfTest) {
           getFodderSnapshot:{ rating: 85, count: fodderSnap.length },
           getFodderByRating:{ rating: 85, count: fodderCards.length },
           getFodderHistory: { rating: 85, count: fodderHist.length },
-          getLLMHistory:   { count: llmHistory.length },
+          getLLMHistory:          { count: llmHistory.length },
+          getRecommendations:     { count: recsList.length, rows: recsList },
+          getRecommendationStats: recsStats,
         },
       };
       process.stdout.write(JSON.stringify(result, null, 2) + '\n');

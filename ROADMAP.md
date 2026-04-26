@@ -148,10 +148,17 @@ Update status at the end of every session. Do not skip ahead — finish the curr
 ---
 
 ## Phase 3 — Autonomous recommendations
-**Placeholder.** Scope decided after Phase 2 observations. Likely shape:
-- Recurring job that scans hot-list cards, pulls signal context, asks LLM for calls
-- Recommendations view in UI with filters and dismissal
-- Optional Discord bot to post to owner's private server
+**Status:** In progress (session 23). Seeding outcome data now.
+
+- [x] `generate_recommendations(platform, db_path, max_recs)` — selects top 20 candidates (3+ snapshots/48h, ranked by signal count), calls Claude Haiku, filters confidence<60 + holds, inserts buys/avoids
+- [x] Fodder sweep (ratings 82-91) — within 10% of 7d low + promo in 14 days
+- [x] `evaluate_outcomes(db_path)` — marks recs >24h old as correct/incorrect/neutral/expired
+- [x] Scheduler jobs: recommendations_pc (every 2h), recommendations_console (offset 60min), outcome_evaluator (every 6h)
+- [x] HTTP trigger server on 127.0.0.1:8765 (POST /run-recommendations) for UI-initiated runs
+- [x] IPC handlers: getRecommendations, dismissRecommendation, getRecommendationStats, triggerRecommendations
+- [x] Recommendations view in UI: stats bar, buy/avoid cards, dismiss, outcome badge, auto-refresh 60s
+- [ ] Walk through UI with owner sign-off
+- [ ] Accumulate ≥500 outcomes to seed Phase 4 classifier
 
 ---
 

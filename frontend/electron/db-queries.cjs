@@ -196,7 +196,65 @@ function getLLMHistory(db, { limit = 10 } = {}) {
   } catch { return []; }
 }
 
+// ---------------------------------------------------------------------------
+// Recommendations queries
+// ---------------------------------------------------------------------------
+
+const GET_RECS_SQL = `
+  SELECT r.id,
+    COALESCE(c.player_name, r.reasoning) AS card_name,
+    COALESCE(c.version_name, 'fodder')   AS version_name,
+    r.platform, r.call, r.confidence, r.horizon_hours,
+    r.target_price, r.reasoning, r.ts_utc, r.dismissed_at,
+    o.verdict AS outcome_verdict
+  FROM recommendations r
+  LEFT JOIN cards c ON c.id = r.card_id
+  LEFT JOIN outcomes o ON o.recommendation_id = r.id
+  WHERE r.platform = ?
+    AND (? = 0 OR r.dismissed_at IS NULL)
+  ORDER BY r.ts_utc DESC, r.confidence DESC
+  LIMIT ?`;
+
+const REC_STATS_SQL = `
+  SELECT
+    COUNT(*) AS total_evaluated,
+    SUM(CASE WHEN o.verdict = 'correct'   THEN 1 ELSE 0 END) AS correct,
+    SUM(CASE WHEN o.verdict = 'incorrect' THEN 1 ELSE 0 END) AS incorrect,
+    SUM(CASE WHEN o.verdict = 'neutral'   THEN 1 ELSE 0 END) AS neutral,
+    SUM(CASE WHEN r.call = 'buy'   THEN 1 ELSE 0 END) AS buy_total,
+    SUM(CASE WHEN r.call = 'avoid' THEN 1 ELSE 0 END) AS avoid_total
+  FROM recommendations r
+  JOIN outcomes o ON o.recommendation_id = r.id
+  WHERE r.ts_utc >= datetime('now', ? || ' days')`;
+
+function getRecommendations(db, { platform, limit = 50, activeOnly = true } = {}) {
+  try {
+    const activeFlag = activeOnly ? 1 : 0;
+    return db.prepare(GET_RECS_SQL).all(platform, activeFlag, limit);
+  } catch { return []; }
+}
+
+function dismissRecommendation(db, { id } = {}) {
+  try {
+    db.prepare(`UPDATE recommendations SET dismissed_at = datetime('now') WHERE id = ?`).run(id);
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+
+function getRecommendationStats(db, { days = 7 } = {}) {
+  try {
+    const row = db.prepare(REC_STATS_SQL).get(`-${Math.abs(parseInt(days, 10))}`);
+    if (!row) return null;
+    const { total_evaluated, correct, incorrect, neutral, buy_total, avoid_total } = row;
+    const accuracy_pct = total_evaluated > 0
+      ? Math.round(100 * correct / (correct + incorrect || 1))
+      : null;
+    return { total_evaluated, correct, incorrect, neutral, accuracy_pct, buy_total, avoid_total };
+  } catch { return null; }
+}
+
 module.exports = {
   getTopMovers, searchCards, getCardDetail, getScraperHealth, getRecentSignals,
   getFodderSummary, getFodderSnapshot, getFodderByRating, getFodderHistory, getLLMHistory,
+  getRecommendations, dismissRecommendation, getRecommendationStats,
 };

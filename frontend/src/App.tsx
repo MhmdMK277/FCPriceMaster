@@ -7,10 +7,11 @@ import { Signals } from './views/Signals';
 import { Settings } from './views/Settings';
 import { Fodder } from './views/Fodder';
 import { Ask } from './views/Ask';
+import { Recommendations } from './views/Recommendations';
 import { usePlatform } from './lib/usePlatform';
 import './App.css';
 
-type View = 'ask' | 'top-movers' | 'card-search' | 'fodder' | 'scraper-health' | 'signals' | 'settings';
+type View = 'recommendations' | 'ask' | 'top-movers' | 'card-search' | 'fodder' | 'scraper-health' | 'signals' | 'settings';
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   constructor(props: { children: ReactNode }) {
@@ -46,6 +47,7 @@ export default function App() {
           <div className="logo">FCPriceMaster</div>
 
           <nav className="nav">
+            <NavItem label="Recommendations" active={view === 'recommendations'} onClick={() => setView('recommendations')} />
             <NavItem label="Ask" active={view === 'ask'} onClick={() => setView('ask')} />
             <NavItem label="Top Movers" active={view === 'top-movers'} onClick={() => setView('top-movers')} />
             <NavItem label="Card Search" active={view === 'card-search'} onClick={() => setView('card-search')} />
@@ -68,6 +70,7 @@ export default function App() {
         </aside>
 
         <main className="content">
+          {view === 'recommendations' && <Recommendations platform={platform} />}
           {view === 'ask'            && <Ask platform={platform} setPlatform={setPlatform} />}
           {view === 'top-movers'     && <TopMovers platform={platform} />}
           {view === 'card-search'    && <CardSearch platform={platform} />}

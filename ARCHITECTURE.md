@@ -285,6 +285,20 @@ The scheduler factory does not call `.start()`. This lets unit tests inspect job
 **`taskkill /F /T /PID` in dev.ps1 for recursive kill.**
 Python spawns Chromium as a grandchild. `Stop-Process -Force` only kills the direct child (the PowerShell wrapper). `taskkill /F /T` kills the entire process tree rooted at the backend PID, ensuring Chromium.exe is always cleaned up when the Electron window closes.
 
+## 2026-04-26 — session 23 — Phase 3: Autonomous recommendations
+
+**Autonomous recommender runs every 2h, max 20 candidates, filters confidence<60 and holds.**
+`generate_recommendations` selects cards with 3+ snapshots in last 48h, ranked by signal count (24h) descending. Calls Claude Haiku per card using a distinct "originating" system prompt (vs the Ask prompt which evaluates a user's call). Candidates capped at 20 to keep LLM cost to ~$0.01/run. Filters: confidence<60 skipped, hold verdicts skipped, card with rec in last 6h skipped.
+
+**Outcome evaluator runs every 6h, evaluates recs >24h old, seeds Phase 4 dataset.**
+`evaluate_outcomes` computes price change between rec timestamp and now: >5% in predicted direction → correct; >5% against → incorrect; <5% either way → neutral; no price data → expired. Results stored in `outcomes` table.
+
+**FastAPI-lite: asyncio TCP server on 127.0.0.1:8765 for UI-triggered recommendation runs.**
+Zero new Python dependencies. `asyncio.start_server` handles one route: `POST /run-recommendations`. Electron's `db:triggerRecommendations` IPC handler fetches this endpoint. The handler spawns an `asyncio.create_task` so the HTTP response returns immediately while the LLM work runs in background.
+
+**SQLite datetime format mismatch: use `strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ...)` not `datetime('now', ...)`.**
+All `ts_utc` values in the DB are stored as `2026-04-25T05:54:10Z` (T-format, Python strftime). SQLite's `datetime('now', '-N hours')` returns `2026-04-25 05:54:10` (space-format). String comparison `T-format <= space-format` is always FALSE because `T` (0x54) > ` ` (0x20). Fix: use `strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-N hours')` in all SQL time comparisons in recommender.py. Pre-existing code in context_builder.py is unaffected because its test fixtures insert timestamps using SQLite `datetime('now', ?)` (same space format on both sides).
+
 ## 2026-04-25 Decisions
 
 **Fodder covers ratings 81-93, all card versions, only 0-coin excluded.**
