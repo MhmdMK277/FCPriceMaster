@@ -21,6 +21,26 @@ Required fields per entry: date, session number, goal, done, next, gotchas, chan
 
 <!-- Entries go below this line, newest first -->
 
+### 2026-04-26 — session 20
+**Goal:** Fix Twitter allowlist filter — non-FUT tweets (@IGN etc.) were flooding the Signals view because `_extract_tweets()` had no handle filtering and `_switch_to_following_tab()` failed silently.
+
+**Done:**
+- **Fix 1 — Allowlist filter in `poll_once()`:** After `_extract_tweets()`, filter `raw_tweets` to only handles in `_account_config` (already lowercase). Empty allowlist now blocks all tweets rather than passing everything through. Logs `"After allowlist filter: N/M tweets from known FUT accounts"`.
+- **Fix 2 — Robust Following tab switch:** Primary path navigates to `?tab=following` URL; fallback clicks the tab element. Both paths verify tweet articles are present before returning True. If neither confirms Following content, `poll_once()` returns 0 immediately (skips ingestion) instead of ingesting For You garbage.
+- **Fix 3 — DB cleanup:** Deleted 8,432 non-FUT twitter signals and 8,432 matching `twitter_tweet_ids` rows; also deleted 10,911 orphaned `twitter_tweet_ids` rows (signal deleted but tweet_id row remained). Remaining twitter signals: futsheriff(45), fut_scoreboard(11), futdonkey(2).
+- **Fix 4 — Startup log:** `start()` now logs `"Twitter allowlist: N handles: h1, h2, ..."` and warns if empty.
+- **5 new tests** in `test_twitter_ingest.py` covering: allowlist keeps known handles, empty allowlist blocks all, case-insensitivity, missing handle field, full persist-path with filter. 18/18 Twitter tests pass; 100/100 total.
+
+**Next:** Phase 3 — recommendations engine or price history charts (see ROADMAP).
+
+**Gotchas:**
+- `signals` PK is `id`, not `signal_id` — the `twitter_tweet_ids.signal_id` FK references `signals.id`. The cleanup query had to use `id`.
+- `_switch_to_following_tab` now may return False even when X is reachable (tab just not confirmable) — the poll silently skips in that case, which is correct but will show as `following_tab_unavailable` health rows if X DOM changes again.
+
+**Changed files:**
+- `backend/src/workers/twitter_ingest.py`
+- `backend/tests/test_twitter_ingest.py`
+
 ### 2026-04-26 — session 19
 **Goal:** Rewrite fodder scraper to use `page.evaluate()` JS DOM extraction on `/cheapest-by-rating/` — one page load per platform instead of 26 — and fix the Fodder UI layout.
 

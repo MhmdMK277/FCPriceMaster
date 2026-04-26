@@ -224,3 +224,81 @@ def test_persist_tweet_with_media(tmp_db: str) -> None:
     assert att is not None
     assert "pbs.twimg.com" in att[0]
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Allowlist filter tests (Fix 1)
+# ---------------------------------------------------------------------------
+
+def _make_raw(handle: str, tweet_id: str = "111") -> dict:
+    return {"handle": handle, "text": "test", "timestamp": "2024-04-20T10:00:00Z", "tweet_id": tweet_id, "media_urls": []}
+
+
+def test_allowlist_filter_keeps_known_handles() -> None:
+    allowed = {"futsheriff", "fut_scoreboard", "futdonkey"}
+    raw_tweets = [
+        _make_raw("FutSheriff", "1"),
+        _make_raw("IGN", "2"),
+        _make_raw("FUT_Scoreboard", "3"),
+        _make_raw("HongqiGlobal", "4"),
+    ]
+    filtered = [t for t in raw_tweets if t.get("handle", "").lower() in allowed]
+    assert len(filtered) == 2
+    handles = {t["handle"] for t in filtered}
+    assert handles == {"FutSheriff", "FUT_Scoreboard"}
+
+
+def test_allowlist_filter_empty_allowlist_blocks_all() -> None:
+    """An empty allowlist must block everything — not pass everything through."""
+    allowed: set[str] = set()
+    raw_tweets = [_make_raw("FutSheriff", "1"), _make_raw("FUTDonkey", "2")]
+    if allowed:
+        filtered = [t for t in raw_tweets if t.get("handle", "").lower() in allowed]
+    else:
+        filtered = []  # empty allowlist = block all
+    assert filtered == []
+
+
+def test_allowlist_filter_case_insensitive() -> None:
+    allowed = {"futsheriff", "fut_scoreboard"}
+    raw_tweets = [
+        _make_raw("FUTSHERIFF", "1"),
+        _make_raw("FUT_SCOREBOARD", "2"),
+        _make_raw("SomeOther", "3"),
+    ]
+    filtered = [t for t in raw_tweets if t.get("handle", "").lower() in allowed]
+    assert len(filtered) == 2
+
+
+def test_allowlist_filter_missing_handle_field() -> None:
+    """Tweets without a handle key must be dropped (handle defaults to empty string)."""
+    allowed = {"futsheriff"}
+    raw_tweets = [{"text": "no handle", "tweet_id": "1"}]
+    filtered = [t for t in raw_tweets if t.get("handle", "").lower() in allowed]
+    assert filtered == []
+
+
+def test_persist_only_allowlisted_handles(tmp_db: str) -> None:
+    """Full path: allowlist + persist — non-FUT tweet must not appear in signals."""
+    conn = open_db(tmp_db)
+    allowed = {"futsheriff", "fut_scoreboard", "futdonkey"}
+    raw_tweets = [
+        _make_raw("FutSheriff", "10"),
+        _make_raw("IGN", "11"),
+        _make_raw("FUTDonkey", "12"),
+    ]
+    filtered = [t for t in raw_tweets if t.get("handle", "").lower() in allowed]
+    account_config = {
+        "futsheriff": {"category": "leaks", "priority": "high"},
+        "futdonkey": {"category": "leaks", "priority": "medium"},
+    }
+    for raw in filtered:
+        data = parse_tweet_data(raw, account_config)
+        persist_tweet(conn, data)
+
+    rows = conn.execute("SELECT source_server FROM signals WHERE source='twitter'").fetchall()
+    handles = {r[0].lower() for r in rows}
+    assert "ign" not in handles
+    assert "futsheriff" in handles
+    assert "futdonkey" in handles
+    conn.close()

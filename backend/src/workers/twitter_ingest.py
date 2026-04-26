@@ -380,7 +380,17 @@ class TwitterIngestWorker:
 
     async def start(self) -> None:
         self._account_config = load_account_config()
-        logger.info("Account config loaded: %d handles", len(self._account_config))
+        handle_list = ", ".join(sorted(self._account_config.keys()))
+        logger.info(
+            "Twitter allowlist: %d handles: %s",
+            len(self._account_config),
+            handle_list or "(none — all tweets will be blocked)",
+        )
+        if not self._account_config:
+            logger.warning(
+                "Twitter allowlist is EMPTY — all tweets will be dropped. "
+                "Check config/twitter_accounts.yaml."
+            )
 
         self._playwright_obj = await async_playwright().start()
         self._context = await _build_context(self._playwright_obj, self.cookie_path)
@@ -396,23 +406,43 @@ class TwitterIngestWorker:
 
     async def _switch_to_following_tab(self, page: Page) -> bool:
         """
-        Click the Following tab on /home. Returns True if successful.
-        The For You tab is the default; Following shows only accounts the user follows.
+        Switch to the Following timeline. Primary: navigate to /?tab=following.
+        Fallback: click the Following tab element.
+        Returns True only when we can confirm Following content is showing.
         """
+        # Primary: URL-based navigation
+        try:
+            following_url = "https://x.com/home?tab=following"
+            await page.goto(following_url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(2000)
+            current_url = page.url
+            if "tab=following" in current_url or "following" in current_url:
+                has_articles = await page.query_selector('article[data-testid="tweet"]')
+                if has_articles:
+                    logger.info("Following tab active via URL navigation (url=%s)", current_url)
+                    return True
+            logger.debug("URL navigation did not land on Following (url=%s) — trying tab click", current_url)
+        except Exception as exc:
+            logger.debug("URL-based Following navigation failed: %s", exc)
+
+        # Fallback: click tab
         try:
             tab = page.get_by_role("tab", name="Following")
             if await tab.count() == 0:
-                # Fallback selector used by some Twitter DOM versions
                 tab = page.locator('[role="tab"]:has-text("Following")')
             if await tab.count() == 0:
-                logger.warning("Following tab not found — staying on For You (selector may have changed)")
+                logger.warning("Following tab not found (selector may have changed) — skipping poll to avoid For You ingestion")
                 return False
             await tab.first.click()
-            await page.wait_for_timeout(2000)  # let Following timeline reload
-            logger.info("Switched to Following tab")
-            return True
+            await page.wait_for_timeout(2000)
+            has_articles = await page.query_selector('article[data-testid="tweet"]')
+            if has_articles:
+                logger.info("Following tab active via tab click")
+                return True
+            logger.warning("Tab click completed but no tweet articles visible — skipping poll")
+            return False
         except Exception as exc:
-            logger.warning("Could not click Following tab: %s", exc)
+            logger.warning("Could not switch to Following tab: %s — skipping poll", exc)
             return False
 
     async def poll_once(self) -> int:
@@ -432,10 +462,35 @@ class TwitterIngestWorker:
             if state == "rate_limited":
                 raise RuntimeError("rate_limited")
 
-            await self._switch_to_following_tab(page)
+            switched = await self._switch_to_following_tab(page)
+            if not switched:
+                logger.warning("Could not confirm Following tab — skipping poll (0 ingested)")
+                _write_health(self.db_path, success=False, error_text="following_tab_unavailable")
+                return 0
 
             raw_tweets = await _extract_tweets(page)
-            logger.info("Timeline: found %d tweet articles", len(raw_tweets))
+            total_before = len(raw_tweets)
+            logger.info("Timeline: found %d tweet articles", total_before)
+
+            # Allowlist filter — drop anything not in our known FUT accounts
+            allowed_handles = set(self._account_config.keys())  # already lowercase
+            if allowed_handles:
+                raw_tweets = [
+                    t for t in raw_tweets
+                    if t.get("handle", "").lower() in allowed_handles
+                ]
+                if len(raw_tweets) < total_before:
+                    logger.info(
+                        "After allowlist filter: %d/%d tweets from known FUT accounts",
+                        len(raw_tweets), total_before,
+                    )
+            else:
+                # Empty allowlist = config not loaded; block everything
+                logger.warning(
+                    "Allowlist is empty — dropping all %d tweets to avoid garbage ingestion",
+                    total_before,
+                )
+                return 0
 
             if not raw_tweets:
                 self._consecutive_empty += 1
