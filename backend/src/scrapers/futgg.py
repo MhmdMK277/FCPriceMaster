@@ -80,6 +80,26 @@ def _parse_badge(badge_text: str) -> tuple[str, float | None, int | None]:
     return "", None, None
 
 
+def _is_valid_fut_price(price: int) -> bool:
+    """
+    Reject prices that cannot be valid FUT market bids.
+    Actual EA FC price ladder (observed from live market):
+      200–999: multiples of 50
+      1000–9999: multiples of 100
+      10000–99999: multiples of 250
+      100000+: multiples of 1000
+    """
+    if price < 200:
+        return False
+    if price < 1000:
+        return price % 50 == 0
+    if price < 10000:
+        return price % 100 == 0
+    if price < 100000:
+        return price % 250 == 0
+    return price % 1000 == 0
+
+
 def _card_key_from_href(href: str) -> str | None:
     """'/players/188350-marco-reus/26-67297214/' → '26-67297214'"""
     m = _HREF_RE.search(href)
@@ -412,102 +432,118 @@ class FutGGScraper(PlaywrightScraperBase):
         ratings: list[int] | None = None,
     ) -> dict[int, dict[str, Any]]:
         """
-        Navigate to https://www.fut.gg/cheapest-by-rating/ once and extract cheapest
-        cards for every rating section visible on the page.  One page load per platform
-        instead of 13.
+        Navigate /cheapest-by-rating/ ONCE, switch platform via URL param, then use a
+        single JS evaluate() call to extract all rating sections in one DOM pass.
 
-        Returns {rating: snapshot_dict} for every rating that yielded at least one card.
-        Falls back to fetch_fodder_cheapest per-rating on any unrecoverable error.
+        Returns {rating: snapshot_dict} for every rating that yielded at least one valid card.
+        Returns empty dict if the page yields no sections (caller decides whether to fallback).
         """
-        ratings = ratings or list(range(81, 94))
+        ratings_set = set(ratings or range(81, 94))
         plat_param = "pc" if platform == "pc" else "console"
+        # Platform passed as URL param — avoids the Radix dropdown (which times out).
         url = f"https://www.fut.gg/cheapest-by-rating/?platform={plat_param}"
         page = await self._new_page()
         results: dict[int, dict[str, Any]] = {}
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         try:
             await self._navigate(page, url)
-            # Wait for at least one card anchor to appear
+            # Wait for section headings to appear
             try:
-                await page.wait_for_selector('a[href*="/players/"][href*="/26-"]', timeout=60000)
+                await page.wait_for_selector('h2, h3', timeout=30000)
+            except Exception:
+                pass
+            # Then wait for at least one card anchor (any href containing /26-)
+            try:
+                await page.wait_for_selector('a[href*="/26-"]', timeout=60000)
             except Exception:
                 pass
 
-            # The page has rating sections.  Each section has a heading that includes the
-            # rating number (e.g. "Cheapest 89 Rated Players") and then a row of card anchors.
-            # We iterate over all card anchors and group by their rating badge value.
-            anchors = page.locator('a[href*="/players/"][href*="/26-"]')
-            total_anchors = await anchors.count()
-            total_anchors = min(total_anchors, 300)  # cap to avoid runaway
+            # Single DOM pass via JS evaluate.
+            # DOM structure on /cheapest-by-rating/:
+            #   h2 → inside div.flex-between (heading row)
+            #   h2's grandparent = section wrapper div
+            #   all card anchors are inside the grandparent
+            #   anchor.innerText = "PlayerName\nPriceStr\nPosition\nRating"
+            # NOTE: the JS string is a raw Python string; \n inside is a literal backslash-n
+            # that becomes the JS string escape sequence for newline.
+            js = (
+                "(() => {"
+                "  var heads = document.querySelectorAll('h2, h3');"
+                "  var sections = [];"
+                "  for (var i = 0; i < heads.length; i++) {"
+                "    var h = heads[i];"
+                "    var m = h.textContent.match(/Cheapest (\\d+) Rated/);"
+                "    if (!m) continue;"
+                "    var rating = parseInt(m[1]);"
+                "    var gp = h.parentElement && h.parentElement.parentElement;"
+                "    if (!gp) continue;"
+                "    var anchors = gp.querySelectorAll('a[href*=\"/26-\"]');"
+                "    var cards = [];"
+                "    for (var j = 0; j < anchors.length; j++) {"
+                "      var a = anchors[j];"
+                "      var parts = a.innerText.split('\\n').map(function(s){return s.trim();}).filter(Boolean);"
+                "      if (parts.length < 2) continue;"
+                "      cards.push({href: a.getAttribute('href') || '', parts: parts});"
+                "    }"
+                "    sections.push({rating: rating, cards: cards});"
+                "  }"
+                "  return sections;"
+                "})()"
+            )
+            sections: list[dict] = await page.evaluate(js)
 
-            # Per-rating card accumulator
-            rating_cards: dict[int, list[dict[str, Any]]] = {}
+            if not sections:
+                logger.warning(
+                    "fetch_fodder_all_ratings: JS evaluate returned no sections for platform=%s",
+                    platform,
+                )
+                return {}
 
-            for i in range(total_anchors):
-                anchor = anchors.nth(i)
-
-                badge_el = anchor.locator(".font-din").first
-                if await badge_el.count() == 0:
-                    continue
-                badge_text = await badge_el.inner_text()
-                position, card_rating_f, price = _parse_badge(badge_text)
-                if price is None or card_rating_f is None:
-                    continue
-
-                card_rating = int(card_rating_f)
-                if card_rating not in ratings:
-                    continue
-
-                bucket = rating_cards.setdefault(card_rating, [])
-                if len(bucket) >= 10:
-                    continue  # already have 10 for this rating
-
-                href = await anchor.get_attribute("href") or ""
-                card_key = _card_key_from_href(href) or ""
-
-                card_imgs = anchor.locator("img")
-                player_name = ""
-                card_version = ""
-                img_count = await card_imgs.count()
-                for j in range(img_count):
-                    alt = await card_imgs.nth(j).get_attribute("alt") or ""
-                    if " - " in alt and any(c.isdigit() for c in alt):
-                        player_name, card_version = _player_name_from_alt(alt)
-                        break
-
-                club_badge_url = ""
-                club_name = ""
-                club_img = anchor.locator("img[src*='club']").first
-                if await club_img.count() > 0:
-                    club_badge_url = await club_img.get_attribute("src") or ""
-                    club_name = await club_img.get_attribute("alt") or ""
-
-                nation_flag_url = ""
-                nation_name = ""
-                nation_img = anchor.locator("img[src*='nation'], img[src*='flag']").first
-                if await nation_img.count() > 0:
-                    nation_flag_url = await nation_img.get_attribute("src") or ""
-                    nation_name = await nation_img.get_attribute("alt") or ""
-
-                bucket.append({
-                    "card_key": card_key,
-                    "player_name": player_name,
-                    "rating": card_rating,
-                    "position": position,
-                    "club_name": club_name,
-                    "nation_name": nation_name,
-                    "club_badge_url": club_badge_url,
-                    "nation_flag_url": nation_flag_url,
-                    "card_version": card_version,
-                    "bin_price": price,
-                })
-
-            # Persist each rating bucket
             con = sqlite3.connect(self.db_path)
             with con:
-                for card_rating, cards in rating_cards.items():
-                    if not cards:
+                for section in sections:
+                    card_rating: int = section["rating"]
+                    if card_rating not in ratings_set:
                         continue
+
+                    cards: list[dict[str, Any]] = []
+                    for raw in section["cards"]:
+                        # parts format: [name, price_str, position, rating_str]
+                        parts = raw.get("parts", [])
+                        if len(parts) < 2:
+                            continue
+                        player_name = parts[0]
+                        price = _parse_price(parts[1])
+                        position = parts[2] if len(parts) >= 3 else ""
+                        card_version = ""  # not available on this page
+                        if price is None or price < 200:
+                            continue
+
+                        href = raw.get("href", "")
+                        card_key = _card_key_from_href(href) or ""
+
+                        cards.append({
+                            "card_key": card_key,
+                            "player_name": player_name,
+                            "rating": card_rating,
+                            "position": position,
+                            "club_name": "",
+                            "nation_name": "",
+                            "club_badge_url": "",
+                            "nation_flag_url": "",
+                            "card_version": card_version,
+                            "bin_price": price,
+                        })
+                        if len(cards) >= 10:
+                            break
+
+                    if not cards:
+                        logger.warning(
+                            "fetch_fodder_all_ratings: no valid cards for rating=%d platform=%s",
+                            card_rating, platform,
+                        )
+                        continue
+
                     prices_sorted = sorted(c["bin_price"] for c in cards)
                     cheapest = prices_sorted[0]
                     second_cheapest = prices_sorted[1] if len(prices_sorted) > 1 else None
@@ -565,10 +601,7 @@ class FutGGScraper(PlaywrightScraperBase):
         platforms: list[Platform] | None = None,
     ) -> int:
         """
-        Sweep all rating+platform combos using fetch_fodder_all_ratings (1 page load per
-        platform instead of 13).  Falls back to per-rating fetch_fodder_cheapest if the
-        all-ratings page yields no results for a platform.
-
+        2 page loads per sweep: fetch_fodder_all_ratings(pc) + fetch_fodder_all_ratings(console).
         Returns total snapshot rows inserted.
         """
         ratings = ratings or list(range(81, 94))
@@ -578,27 +611,9 @@ class FutGGScraper(PlaywrightScraperBase):
             try:
                 results = await self.fetch_fodder_all_ratings(plat, ratings)
                 total += len(results)
-                if results:
-                    logger.info(
-                        "fodder_sweep (all-ratings): platform=%s ratings_found=%d", plat, len(results)
-                    )
-                    continue
+                logger.info("fodder_sweep: platform=%s ratings_found=%d", plat, len(results))
             except Exception as exc:
-                logger.warning(
-                    "fetch_fodder_all_ratings failed for platform=%s: %s — falling back to per-rating", plat, exc
-                )
-
-            # Fallback: per-rating fetches
-            logger.info("fodder_sweep: falling back to per-rating fetches for platform=%s", plat)
-            for rating in ratings:
-                try:
-                    result = await self.fetch_fodder_cheapest(rating, plat)
-                    if result:
-                        total += 1
-                except Exception as exc:
-                    logger.error(
-                        "fodder_sweep fallback failed for rating=%d platform=%s: %s", rating, plat, exc
-                    )
+                logger.error("fodder_sweep failed for platform=%s: %s", plat, exc)
         return total
 
     async def fetch_card_on_demand(self, card_key: str, platform: Platform, max_age_hours: float = 2.0) -> dict[str, Any] | None:

@@ -21,6 +21,64 @@ Required fields per entry: date, session number, goal, done, next, gotchas, chan
 
 <!-- Entries go below this line, newest first -->
 
+### 2026-04-26 — session 19
+**Goal:** Rewrite fodder scraper to use `page.evaluate()` JS DOM extraction on `/cheapest-by-rating/` — one page load per platform instead of 26 — and fix the Fodder UI layout.
+
+**Done:**
+
+**Scraper rewrite (`fetch_fodder_all_ratings`):**
+- Replaced per-anchor Playwright locator loop with a single `page.evaluate()` call that extracts all rating sections in one DOM pass via JS.
+- DOM investigation revealed: heading `h2` sits inside `div.flex-between` → grandparent is the section wrapper; all card anchors are inside the grandparent. No `.font-din` badge; price is in `anchor.innerText` as `name\nprice_str\nposition\nrating`.
+- JS string built by concatenating Python string literals to avoid the `\n` escape problem (raw strings caused JS `SyntaxError`).
+- `fodder_sweep` simplified to 2 page loads (pc + console) with no per-rating fallback.
+- `fetch_fodder_cheapest` retained as on-demand single-rating method.
+- `_is_valid_fut_price()` added with corrected increment ladder (1000-9999: ×100, not ×250; 10000+: ×250, not ×500). NOT applied in live scraping path — JS section-scoped extraction prevents cross-rating contamination; price filter is `>= 200` only.
+
+**DB cleanup:** Deleted all 3,295 stale/wrong fodder_snapshots and 32,415 fodder_cards rows before first correct sweep.
+
+**Live sweep results (2026-04-26 PC):**
+
+| Rating | Cheapest | Expected | Match |
+|--------|----------|----------|-------|
+| 81 | 350 | ~300-400 | ✓ |
+| 82 | 400 | ~400 | ✓ |
+| 83 | 800 | ~750 | ✓ |
+| 84 | 800 | ~750 | ✓ |
+| 85 | 1,000 | ~950-1000 | ✓ |
+| 86 | 800 | ~850-950 | ✓ |
+| 87 | 1,200 | ~950-1100 | ~ |
+| 88 | 1,600 | ~1400 | ~ |
+| 89 | 3,800 | ~3000-3500 | ~ |
+| 90 | 5,800 | ~5600 | ✓ |
+| 91 | 11,500 | ~11500 | ✓ |
+| 92 | 19,000 | ~16000 | ~ |
+| 93 | 23,250 | ~22500-25000 | ✓ |
+
+No 38K+ values. Minor deviations reflect market movement since owner's April 25 observation. Console data also inserted (81→350, 91→10750, 93→22000).
+
+**UI fixes (Fodder.tsx):**
+- `CardItem` rewritten: max-width 140px, no club/nation badge images (not available on this page), position pill 28px, name truncated to 12 chars, version to 10 chars.
+- Expanded card container: `overflowX: auto`, `max-width: 100%`.
+- Chart height changed 180→160px.
+- Removed `ImageWithFallback` component (no longer used).
+
+**Tests:** 95/95 passing. New tests: `test_is_valid_fut_price` (corrected ladder), `test_fetch_fodder_all_ratings_mock` (JS evaluate returns `parts`-based sections; `price < 200` rejected; rating 89 + 82 inserted correctly).
+
+**Next:** Continue Phase 1.6/2.6 exit criteria or Phase 3 planning per ROADMAP.
+
+**Gotchas:**
+- `/cheapest-by-rating/` DOM structure is unique: grandparent traversal (`h2.parentElement.parentElement`) needed, not `h.nextElementSibling`.
+- JS `\n` in Python string: multiline Python strings turn `\n` in JS into actual newlines → JS `SyntaxError`. Use string concatenation or `\\n` (not in raw strings).
+- FUT price increments: 1000-9999 is ×100 (not ×250), 10000-99999 is ×250 (not ×500). Some edge prices (e.g., 10600) may fall in a transitional zone — price validator kept conservative (only `>= 200` filter in live path).
+- The `fodder_snapshots` CLI display shows all historical rows; use `ORDER BY ts_utc DESC LIMIT 1` per rating to get current data.
+
+**Changed files:**
+- `backend/src/scrapers/futgg.py` — `_is_valid_fut_price()`, rewritten `fetch_fodder_all_ratings`, simplified `fodder_sweep`
+- `backend/tests/test_fodder_scraper.py` — `test_is_valid_fut_price`, `test_fetch_fodder_all_ratings_mock`, updated import
+- `frontend/src/views/Fodder.tsx` — compact `CardItem`, removed `ImageWithFallback`, overflow-x scroll, chart height 160px
+- `ARCHITECTURE.md` — session 19 decisions
+- `ROADMAP.md` — session 19 status updates
+
 ### 2026-04-25 — session 18
 **Goal:** Fix Twitter worker pulling from "For You" algorithmic feed instead of "Following" timeline.
 

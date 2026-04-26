@@ -138,6 +138,7 @@ Update status at the end of every session. Do not skip ahead — finish the curr
 - [x] All 89 tests passing; selftest exits 0 with all handlers registered
 - [x] **Session 14 bugfixes:** futgg_fodder 41-failure streak fixed — platform switched from Radix dropdown to URL param (`?sort=cheapest&rating=N&platform=pc|console`); no more timeout errors; 20 snapshots (10 PC + 10 console) confirmed. `fetch_card_on_demand` added; signal tagger triggers on-demand price fetch for newly tagged cards.
 - [x] **Session 16 URL fix:** `?sort=cheapest&rating=N` ignored by FUT.GG — rewrote to `?overall__gte=N&overall__lte=N&sorts=current_price&platform=pc|console`; added `fetch_fodder_all_ratings` (single-page sweep, falls back gracefully to per-rating); verified both platforms with correct prices (82→400, 89→3300, 90→5400 PC).
+- [x] **Session 19 rewrite:** `fetch_fodder_all_ratings` rewritten to use `page.evaluate()` JS DOM extraction on `/cheapest-by-rating/` — grandparent traversal finds all section cards in one DOM pass; anchor innerText format `name\nprice\nposition\nrating` parsed directly. 2 page loads per full sweep (was 26). `_is_valid_fut_price()` added with corrected increment ladder. Old stale data (3,295 snapshots, 32,415 cards) cleared. New sweep verified all 13 ratings, both platforms — no 38K+ values. 95/95 tests passing.
 
 ### 2.6 Phase 2 exit criteria
 - [ ] All five sources ingesting reliably for a week

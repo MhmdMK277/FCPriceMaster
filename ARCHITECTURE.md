@@ -205,6 +205,24 @@ would silently create a phantom DB in the wrong location.
 `load_token()` first tries standard dotenv parsing, then falls back to scanning the file for a
 line containing exactly "Token" followed by the token value on the next line.
 
+### 2026-04-26 — session 19 — Fodder scraper rewrite: JS evaluate + DOM section traversal
+
+**`/cheapest-by-rating/` DOM is structurally different from the player listing pages.**
+The `h2` heading ("Cheapest 81 Rated Players") is inside a `div.flex-between` which is itself inside a section wrapper div. Each card anchor (`a[href*="/26-"]`) lives in a separate child div of the section wrapper — not inside the heading's direct sibling. There is no `.font-din` badge element on this page. The anchor's `innerText` delivers the card data as a newline-delimited string: `name\nprice_str\nposition\nrating`.
+
+**`page.evaluate()` with a JS string concatenated from parts avoids `\n` escape issues.**
+Python raw strings (`r"""..."""`) and multiline strings both cause `\n` inside JS string literals to be interpreted as Python newlines, producing JS `SyntaxError`. The workaround: build the JS string by concatenating Python string literals. The `'\\n'` in `a.innerText.split('\\n')` becomes the two-char sequence `\n` in the final JS string, which JS interprets as the newline split character.
+
+**FUT price increment ladder (observed from live market data, FC26):**
+- 200–999: multiples of 50
+- 1000–9999: multiples of 100 (not 250 as initially assumed)
+- 10000–99999: multiples of 250 (not 500 as initially assumed)
+- 100000+: multiples of 1000
+`_is_valid_fut_price()` encodes these corrected increments and is available as a utility, but is NOT applied in the live scraping path since the JS section-scoped extraction already ensures correct section targeting.
+
+**Fodder sweep is now 2 page loads per full sweep (down from 26).**
+`fodder_sweep` calls `fetch_fodder_all_ratings(pc)` then `fetch_fodder_all_ratings(console)`. `fetch_fodder_cheapest(rating, platform)` is retained as a standalone on-demand method for single-rating refreshes but is no longer called in the main sweep path.
+
 ### 2026-04-25 — session 12 — Phase 2d: Fodder tracker, card tagger, Ask LLM
 
 **LLM model: claude-haiku-4-5-20251001.** Chosen for cost (~$0.00044/call at ~580 in / 240 out tokens) and speed. Temperature 0 for deterministic trade verdicts.

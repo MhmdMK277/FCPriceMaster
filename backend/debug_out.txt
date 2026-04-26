@@ -1,0 +1,39 @@
+
+=== Rating 81 (11 cards) ===
+['Mart?nez', '400', 'CB', '81']
+
+=== Rating 82 (11 cards) ===
+['Kumagai', '400', 'CB', '82']
+
+=== Rating 83 (11 cards) ===
+['Bowen', '750', 'RM', '83']
+
+=== Rating 84 (11 cards) ===
+['Alba Redondo', '750', 'ST', '84']
+
+=== Rating 85 (11 cards) ===
+['Chawinga', '1,300', 'LW', '85']
+
+=== Rating 86 (11 cards) ===
+['Olise', '1,200', 'RM', '86']
+
+=== Rating 87 (11 cards) ===
+['Sommer', '1,400', 'GK', '87']
+
+=== Rating 88 (11 cards) ===
+['Debinha', '2,600', 'CAM', '88']
+
+=== Rating 89 (11 cards) ===
+['Raphinha', '4,200', 'LM', '89']
+
+=== Rating 90 (11 cards) ===
+['Pir?s', '13,250', 'RM', '90']
+
+=== Rating 91 (11 cards) ===
+['Laudehr', '16,000', 'CM', '91']
+
+=== Rating 92 (11 cards) ===
+['Ueda', '23,500', 'ST', '92']
+
+=== Rating 93 (11 cards) ===
+['Angerer', '29,250', 'GK', '93']

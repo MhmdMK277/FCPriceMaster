@@ -44,64 +44,34 @@ function positionColor(pos: string): string {
   return '#ef4444';
 }
 
-function ImageWithFallback({ src, alt, size, style }: {
-  src: string; alt: string; size: number; style?: React.CSSProperties;
-}) {
-  const [failed, setFailed] = useState(false);
-  if (!src || failed) {
-    return (
-      <div style={{
-        width: size, height: size, borderRadius: 3, background: '#1e293b',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        fontSize: Math.floor(size * 0.45), color: '#64748b', flexShrink: 0,
-        ...style,
-      }}>
-        {alt ? alt[0].toUpperCase() : '?'}
-      </div>
-    );
-  }
-  return (
-    <img
-      src={src}
-      alt={alt}
-      width={size}
-      height={size}
-      style={{ objectFit: 'contain', flexShrink: 0, ...style }}
-      onError={() => setFailed(true)}
-    />
-  );
-}
 
 function CardItem({ card }: { card: FodderCard }) {
   const posColor = positionColor(card.position);
+  const name = (card.player_name || '—').slice(0, 12);
+  const version = (card.card_version || 'Normal').slice(0, 10);
   return (
     <div style={{
-      display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
+      display: 'flex', flexDirection: 'column', gap: 4, padding: '6px 8px',
       background: '#0f172a', borderRadius: 8, border: '1px solid #1e293b',
-      minWidth: 200, flexShrink: 0,
+      width: 140, maxWidth: 140, flexShrink: 0,
     }}>
-      <ImageWithFallback src={card.club_badge_url} alt={card.club_name} size={24} />
-      <ImageWithFallback
-        src={card.nation_flag_url} alt={card.nation_name} size={20}
-        style={{ height: 14, width: 20 }}
-      />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          {card.player_name || '—'}
-        </div>
-        <div style={{ fontSize: 11, color: '#64748b', marginTop: 1 }}>
-          {card.card_version || 'Normal'}
-        </div>
-      </div>
-      {card.position && (
-        <span style={{
-          fontSize: 10, fontWeight: 700, color: '#fff', background: posColor,
-          borderRadius: 4, padding: '1px 5px', flexShrink: 0,
-        }}>
-          {card.position}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+        {card.position && (
+          <span style={{
+            fontSize: 9, fontWeight: 700, color: '#fff', background: posColor,
+            borderRadius: 3, padding: '1px 4px', width: 28, textAlign: 'center', flexShrink: 0,
+          }}>
+            {card.position}
+          </span>
+        )}
+        <span style={{ fontSize: 12, fontWeight: 600, color: '#e2e8f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }}>
+          {name}
         </span>
-      )}
-      <div style={{ fontSize: 13, fontWeight: 700, color: '#fbbf24', flexShrink: 0, textAlign: 'right' }}>
+      </div>
+      <div style={{ fontSize: 10, color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        {version}
+      </div>
+      <div style={{ fontSize: 13, fontWeight: 700, color: '#fbbf24' }}>
         {fmtCoins(card.bin_price)}
       </div>
     </div>
@@ -215,7 +185,7 @@ export function Fodder({ platform }: { platform: Platform }) {
                         ) : expandedCards.length === 0 ? (
                           <div style={{ color: '#64748b', fontSize: 13 }}>No card data yet — waiting for next sweep.</div>
                         ) : (
-                          <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
+                          <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 6, maxWidth: '100%' }}>
                             {expandedCards.map(card => (
                               <CardItem key={card.id} card={card} />
                             ))}
@@ -230,7 +200,7 @@ export function Fodder({ platform }: { platform: Platform }) {
                       {chartData.length < 2 ? (
                         <div style={{ color: '#64748b', fontSize: 13 }}>Not enough data points yet.</div>
                       ) : (
-                        <ResponsiveContainer width="100%" height={180}>
+                        <ResponsiveContainer width="100%" height={160}>
                           <LineChart data={chartData.map(d => ({
                             ts: new Date(d.ts_utc).toLocaleDateString(),
                             price: d.cheapest_bin,

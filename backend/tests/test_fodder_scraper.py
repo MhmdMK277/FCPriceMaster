@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.db.migrate import run_migrations
-from src.scrapers.futgg import FutGGScraper, _parse_price
+from src.scrapers.futgg import FutGGScraper, _parse_price, _is_valid_fut_price
 
 
 # ---------------------------------------------------------------------------
@@ -36,6 +36,40 @@ def tmp_db():
 # ---------------------------------------------------------------------------
 # Unit: filtering logic
 # ---------------------------------------------------------------------------
+
+def test_is_valid_fut_price():
+    # Below minimum
+    assert not _is_valid_fut_price(150)
+    assert not _is_valid_fut_price(199)
+    # Valid 200-999 range (multiples of 50)
+    assert _is_valid_fut_price(200)
+    assert _is_valid_fut_price(300)
+    assert _is_valid_fut_price(950)
+    assert not _is_valid_fut_price(225)  # not multiple of 50
+    # Valid 1000-9999 range (multiples of 100)
+    assert _is_valid_fut_price(1000)
+    assert _is_valid_fut_price(1100)
+    assert _is_valid_fut_price(3700)
+    assert _is_valid_fut_price(9900)
+    assert not _is_valid_fut_price(1050)  # not multiple of 100
+    assert not _is_valid_fut_price(9950)  # not multiple of 100
+    # Valid 10000-99999 range (multiples of 250)
+    assert _is_valid_fut_price(10000)
+    assert _is_valid_fut_price(12750)
+    assert _is_valid_fut_price(16500)
+    assert not _is_valid_fut_price(10333)  # not multiple of 250
+    # Valid 100000+ range (multiples of 1000)
+    assert _is_valid_fut_price(100000)
+    assert _is_valid_fut_price(355000)
+    assert not _is_valid_fut_price(100500)  # not multiple of 1000
+    # Real market prices from known-correct sweep
+    assert _is_valid_fut_price(300)   # rating 81
+    assert _is_valid_fut_price(400)   # rating 82
+    assert _is_valid_fut_price(750)   # rating 83/84
+    assert _is_valid_fut_price(3500)  # rating 89
+    assert _is_valid_fut_price(5500)  # rating 90
+    assert _is_valid_fut_price(25000) # rating 93
+
 
 def test_parse_price_handles_various_formats():
     assert _parse_price("65.5K") == 65500
@@ -346,3 +380,68 @@ async def test_fetch_fodder_cheapest_ipc_shape(tmp_db):
     # Image URL columns are non-null strings
     assert rows[0][3] is not None
     assert rows[0][4] is not None
+
+
+@pytest.mark.asyncio
+async def test_fetch_fodder_all_ratings_mock(tmp_db):
+    """fetch_fodder_all_ratings uses page.evaluate() to extract sections, persists correctly."""
+    # Simulate JS evaluate returning sections in /cheapest-by-rating/ anchor-text format:
+    # parts = [name, price_str, position, rating_str]
+    fake_sections = [
+        {
+            "rating": 89,
+            "cards": [
+                {"href": "/players/188350-wirtz/26-100001/",  "parts": ["Wirtz", "3,500", "CAM", "89"]},
+                {"href": "/players/100001-kane/26-100002/",   "parts": ["Kane",  "4,250", "ST",  "89"]},
+                {"href": "/players/100002-ramos/26-100003/",  "parts": ["Ramos", "5,500", "CB",  "89"]},
+            ],
+        },
+        {
+            "rating": 82,
+            "cards": [
+                {"href": "/players/200001-player/26-200001/", "parts": ["Player A", "400", "ST", "82"]},
+                {"href": "/players/200002-player/26-200002/", "parts": ["Player B", "450", "CB", "82"]},
+            ],
+        },
+        {
+            # Price below 200 → rejected by the live path's price < 200 check
+            "rating": 83,
+            "cards": [
+                {"href": "/players/300001-bad/26-300001/", "parts": ["Bad", "150", "LW", "83"]},
+            ],
+        },
+    ]
+
+    mock_page = AsyncMock()
+    mock_page.evaluate = AsyncMock(return_value=fake_sections)
+
+    scraper = FutGGScraper(db_path=tmp_db)
+    scraper._context = MagicMock()
+    scraper._context.new_page = AsyncMock(return_value=mock_page)
+
+    with patch.object(scraper, '_navigate', new_callable=AsyncMock), \
+         patch.object(scraper, '_dismiss_cmp', new_callable=AsyncMock):
+        results = await scraper.fetch_fodder_all_ratings("pc")
+
+    # rating 89 and 82 should be present; rating 83 rejected (39000 not valid FUT price)
+    assert 89 in results
+    assert 82 in results
+    assert 83 not in results
+
+    assert results[89]["cheapest_bin"] == 3500
+    assert results[89]["second_cheapest_bin"] == 4250
+    assert results[82]["cheapest_bin"] == 400
+
+    con = sqlite3.connect(tmp_db)
+    snaps = con.execute(
+        "SELECT rating, cheapest_bin FROM fodder_snapshots ORDER BY rating"
+    ).fetchall()
+    assert (82, 400) in snaps
+    assert (89, 3500) in snaps
+
+    cards_89 = con.execute(
+        "SELECT player_name, bin_price FROM fodder_cards WHERE rating=89 ORDER BY rank_in_rating"
+    ).fetchall()
+    assert cards_89[0] == ("Wirtz", 3500)
+    assert cards_89[1] == ("Kane", 4250)
+    con.close()
