@@ -42,8 +42,17 @@ BUY: Price is at or near a local low, upcoming demand catalyst exists (SBC, prom
 AVOID: Price is elevated above baseline due to hype or recent spike, likely to correct; or no clear catalyst for appreciation
 If neither clearly applies: respond with verdict="hold" and low confidence
 
-Important constraints:
-- Focus ONLY on events within the next 21 days. Do not reference the next FIFA/FC game launch (FC27) unless the horizon is explicitly "long (weeks)" AND the launch is within 90 days. Never cite a next-game launch as a reason for a medium or short-term trade.
+End-of-cycle awareness (apply based on days_to_next_launch in the user message):
+- days_to_next_launch > 120: do NOT mention the next game. Irrelevant.
+- 60-120 days: for LONG horizon only, briefly note end-of-cycle selling pressure may build.
+- 30-60 days: factor it for medium and long trades. Market weakens progressively.
+- < 30 days: factor it for ALL trades. Almost nothing is worth buying except specific end-of-cycle plays.
+Always refer to "next game launch" generically — never hardcode a game name.
+
+FUTTIES rules (apply only when futties_active=True in the user message):
+- 85-rated gold cards: STRONG BUY signal due to repeatable 85x10 SBC demand. State this explicitly.
+- All other cards: heavy AVOID bias. Repeatable pack supply floods the market relentlessly.
+If futties_days_until < 30: warn about approaching FUTTIES for any long-horizon recommendations.
 
 Respond in this exact JSON format:
 {
@@ -208,7 +217,37 @@ def _get_candidates(con: sqlite3.Connection, platform: str, limit: int = 20) -> 
             "trending",
         )
 
-    return pool_a + pool_b + pool_c
+    # Pool D — FUTTIES special: 85-rated cards only active during FUTTIES window
+    pool_d: list[dict[str, Any]] = []
+    cal = _calendar_context()
+    if cal.get("futties_active"):
+        pool_d = _fetch_pool(
+            """
+            SELECT c.id, c.player_name, c.version_name, c.card_key,
+                   COALESCE(sc.sig_count, 0) AS signal_count_24h
+            FROM cards c
+            JOIN card_attributes ca ON ca.card_id = c.id AND ca.key = 'rating' AND ca.value = '85'
+            LEFT JOIN (
+                SELECT t.card_id, COUNT(*) AS sig_count
+                FROM signal_card_tags t
+                JOIN signals s ON s.id = t.signal_id
+                WHERE s.ts_utc >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-48 hours')
+                GROUP BY t.card_id
+            ) sc ON sc.card_id = c.id
+            WHERE c.id IN (
+                SELECT DISTINCT card_id FROM price_snapshots
+                WHERE platform=? AND ts_utc >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-7 days')
+            )
+            AND c.id NOT IN ({placeholders})
+            ORDER BY COALESCE(sc.sig_count, 0) DESC
+            LIMIT 8
+            """.replace("{placeholders}", ",".join("?" * len(seen)) if seen else "SELECT -1"),
+            (platform, *seen) if seen else (platform,),
+            8,
+            "futties_85",
+        )
+
+    return pool_a + pool_b + pool_c + pool_d
 
 
 def _get_price_momentum(con: sqlite3.Connection, card_id: int, platform: str) -> dict[str, Any]:
@@ -233,16 +272,32 @@ def _get_price_momentum(con: sqlite3.Connection, card_id: int, platform: str) ->
     return {"price_now": price_now, "price_24h": price_24h, "momentum_score": momentum}
 
 
-def _has_recent_rec(con: sqlite3.Connection, card_id: int | None, platform: str, hours: int = 6) -> bool:
-    if card_id is None:
+def _has_recent_rec(
+    con: sqlite3.Connection,
+    card_id: int | None,
+    platform: str,
+    hours: int = 6,
+    player_name: str | None = None,
+) -> bool:
+    if card_id is None and player_name is None:
         return False
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    row = con.execute(
-        """SELECT id FROM recommendations
-           WHERE card_id=? AND platform=? AND dismissed_at IS NULL
-             AND ts_utc >= ?""",
-        (card_id, platform, cutoff),
-    ).fetchone()
+    if player_name:
+        # Guard by player name so different card versions of the same player are deduped
+        row = con.execute(
+            """SELECT r.id FROM recommendations r
+               JOIN cards c ON c.id = r.card_id
+               WHERE c.player_name=? AND r.platform=? AND r.dismissed_at IS NULL
+                 AND r.ts_utc >= ?""",
+            (player_name, platform, cutoff),
+        ).fetchone()
+    else:
+        row = con.execute(
+            """SELECT id FROM recommendations
+               WHERE card_id=? AND platform=? AND dismissed_at IS NULL
+                 AND ts_utc >= ?""",
+            (card_id, platform, cutoff),
+        ).fetchone()
     return row is not None
 
 
@@ -287,6 +342,19 @@ def _format_card_message(card: dict[str, Any], context: dict[str, Any], momentum
     days = _days_since_last_rec_from_card(card)
     if days is not None:
         lines.append(f"Days since last recommendation: {days}")
+
+    # End-of-cycle context
+    days_launch = context.get("days_to_next_launch")
+    eoc_phase = context.get("end_of_cycle_phase", "none")
+    futties_active = context.get("futties_active", False)
+    futties_until = context.get("futties_days_until")
+    if days_launch is not None:
+        lines.append(f"days_to_next_launch: {days_launch}")
+    if eoc_phase != "none":
+        lines.append(f"end_of_cycle_phase: {eoc_phase}")
+    lines.append(f"futties_active: {futties_active}")
+    if futties_until is not None and not futties_active:
+        lines.append(f"futties_days_until: {futties_until}")
 
     cal = context.get("release_calendar", {})
     promos = cal.get("promos", [])
@@ -367,6 +435,49 @@ def _insert_recommendation(
 
 
 # ---------------------------------------------------------------------------
+# FUTTIES structural rec (85-rated fodder)
+# ---------------------------------------------------------------------------
+
+def _futties_85_recommendation(con: sqlite3.Connection, platform: str) -> dict[str, Any] | None:
+    """Emit a structural BUY for 85-rated fodder when FUTTIES is active. No LLM call — structural demand."""
+    existing = con.execute(
+        """SELECT id FROM recommendations
+           WHERE card_id IS NULL AND platform=? AND source='llm_autonomous'
+             AND reasoning LIKE '%FUTTIES%85%' AND dismissed_at IS NULL
+             AND ts_utc >= datetime('now', '-6 hours')""",
+        (platform,),
+    ).fetchone()
+    if existing:
+        return None
+
+    snap = con.execute(
+        """SELECT cheapest_bin FROM fodder_snapshots
+           WHERE rating=85 AND platform=? ORDER BY ts_utc DESC LIMIT 1""",
+        (platform,),
+    ).fetchone()
+    price_str = f"{snap[0]:,}" if snap and snap[0] else "N/A"
+
+    verdict: dict[str, Any] = {
+        "verdict": "buy",
+        "confidence": 85,
+        "reasoning": (
+            f"FUTTIES is active with a repeatable 85x10 SBC. Demand for 85-rated fodder is "
+            f"structural and sustained for weeks, not hype-driven. Current cheapest BIN: {price_str}. "
+            f"Buy at or near fodder price and list once SBC demand lifts the floor."
+        ),
+        "price_context": f"Current 85-rated cheapest BIN: {price_str}. Structural demand from repeatable SBC.",
+        "risk": "low",
+        "suggested_buy_price": snap[0] if snap else None,
+        "suggested_sell_price": None,
+        "horizon": "medium (days)",
+    }
+    rec = _insert_recommendation(con, None, platform, verdict, source="llm_autonomous")
+    rec["player_name"] = "Fodder 85 (FUTTIES)"
+    rec["version_name"] = "fodder"
+    return rec
+
+
+# ---------------------------------------------------------------------------
 # Card recommendations
 # ---------------------------------------------------------------------------
 
@@ -402,7 +513,7 @@ def generate_recommendations(platform: str, db_path: str, max_recs: int = 5) -> 
         for card in candidates:
             card_id = card["card_id"]
 
-            if _has_recent_rec(con, card_id, platform, hours=10):
+            if _has_recent_rec(con, card_id, platform, hours=10, player_name=card["player_name"]):
                 logger.debug("Skipping %s — recent rec exists", card["player_name"])
                 continue
 
@@ -445,6 +556,13 @@ def generate_recommendations(platform: str, db_path: str, max_recs: int = 5) -> 
         # Run fodder sweep after cards
         fodder_recs = _fodder_recommendations(con, platform, db_path, client, model, max_tokens, cap_usd)
         results.extend(fodder_recs)
+
+        # FUTTIES structural fodder rec for rating 85
+        cal = _calendar_context()
+        if cal.get("futties_active"):
+            futties_rec = _futties_85_recommendation(con, platform)
+            if futties_rec:
+                results.append(futties_rec)
 
     finally:
         con.close()

@@ -54,6 +54,18 @@ Upcoming calendar events that could affect demand
 Whether the reasoning in the call is sound given current market data
 Hold time vs risk
 
+End-of-cycle awareness (apply based on days_to_next_launch in the user message):
+- days_to_next_launch > 120: do NOT mention the next game. It is irrelevant.
+- 60-120 days: for LONG horizon trades only, briefly note that end-of-cycle selling pressure may build.
+- 30-60 days: factor it for medium and long trades. Market will progressively weaken.
+- < 30 days: factor it for ALL trades. Market is dying; almost nothing is worth buying except specific end-of-cycle plays.
+Always refer to "next game launch" generically — never hardcode a game name.
+
+FUTTIES rules (apply only when futties_active=True in the user message):
+- 85-rated gold cards: STRONG BUY signal due to repeatable 85x10 SBC demand. Note this explicitly.
+- All other cards: heavy AVOID bias. Repeatable packs flood supply; price recovery before game end is unlikely.
+If futties_days_until < 30: warn about approaching FUTTIES for any long-horizon hold recommendations.
+
 Always respond in this exact JSON format:
 {
   "verdict": "buy" | "hold" | "avoid",
@@ -146,6 +158,20 @@ def _format_user_message(context: dict[str, Any], trade_call: str) -> str:
 
     cal = context.get("release_calendar", {})
     lines.append(f"Today: {cal.get('today', 'unknown')}")
+
+    # End-of-cycle context
+    days_launch = context.get("days_to_next_launch")
+    eoc_phase = context.get("end_of_cycle_phase", "none")
+    futties_active = context.get("futties_active", False)
+    futties_until = context.get("futties_days_until")
+    if days_launch is not None:
+        lines.append(f"days_to_next_launch: {days_launch}")
+    if eoc_phase != "none":
+        lines.append(f"end_of_cycle_phase: {eoc_phase}")
+    lines.append(f"futties_active: {futties_active}")
+    if futties_until is not None and not futties_active:
+        lines.append(f"futties_days_until: {futties_until}")
+
     for promo in cal.get("promos", []):
         if promo.get("in_window"):
             lines.append(f"ACTIVE PROMO: {promo['name']} (ends {promo.get('window_end', '?')})")

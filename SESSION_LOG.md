@@ -21,6 +21,55 @@ Required fields per entry: date, session number, goal, done, next, gotchas, chan
 
 <!-- Entries go below this line, newest first -->
 
+### 2026-04-28 — session 26
+**Goal:** FUTTIES market awareness + game-agnostic end-of-cycle config.
+
+**Done:**
+- `config/release_calendar.yaml` — Added `game_cycle` block (current_game, next_game_launch, next_game_name) and `end_of_cycle` block (futties_window_start/end). Removed hardcoded "FC27 Launch" promo entry; replaced with generic "Next Game Launch". Added FUTTIES as a named promo with `category: end_of_cycle`. One config change per year covers everything.
+- `backend/src/llm/context_builder.py` — Rewrote `_calendar_context()` to compute `days_to_next_launch`, `end_of_cycle_phase` (none/early/mid/late), `futties_active`, `futties_days_until`. FUTTIES and end-of-cycle promos included up to 90 days out; regular promos keep 21-day filter. `build_context()` now exposes all four fields at the top level of the returned dict.
+- `backend/src/llm/ask.py` — Replaced blunt "Do NOT reference FC27" with tiered rules keyed on `days_to_next_launch`. Added FUTTIES rules. Updated `_format_user_message()` to inject end-of-cycle fields into every LLM call.
+- `backend/src/llm/recommender.py` — Same system prompt update. Updated `_format_card_message()` to inject end-of-cycle fields. Added Pool D in `_get_candidates()`: 85-rated cards from `card_attributes` when `futties_active`. Added `_futties_85_recommendation()` — structural (no LLM) BUY rec for 85-rated fodder, emitted once/6h when FUTTIES is active.
+- 123/123 tests pass.
+
+**Verification:**
+- April 28 2026: days_to_next_launch=151, end_of_cycle_phase=none, futties_active=False, futties_days_until=81 ✓
+- August 1 2026: days_to_next_launch=56, end_of_cycle_phase=mid, futties_active=True, futties_days_until=0 ✓
+
+**Next:** Phase 3 UI sign-off walk-through (was deferred from session 25).
+
+**Gotchas:**
+- `_futties_85_recommendation()` does NOT call the LLM — it emits a pre-written verdict with confidence=85. This is intentional: 85-rated demand during FUTTIES is structural (repeatable SBC), not probabilistic. The standard fodder LLM path would likely gate behind the 14-day promo filter and miss FUTTIES on day 1.
+- Pool D sources 85-rated cards via `card_attributes` JOIN. If a card's rating is stored differently (e.g. as int vs string '85'), it will be missed. The join uses `ca.value = '85'` (string) — consistent with how the DB seed writes attributes.
+- Update `next_game_launch` in `game_cycle` when EA announces FC27's official date (~3-4 months before launch).
+
+**Changed files:**
+- `config/release_calendar.yaml`
+- `backend/src/llm/context_builder.py`
+- `backend/src/llm/ask.py`
+- `backend/src/llm/recommender.py`
+- `ARCHITECTURE.md`
+
+### 2026-04-27 — session 25
+**Goal:** Fix stats bar NaN, fix duplicate recommendations, suppress FC27 from ask.py, dedup existing recs.
+
+**Done:**
+- `frontend/electron/db-queries.cjs` — Fixed NaN in "Oldest pending" stat. Root cause: SQLite timestamps already end in `Z`; appending another `Z` made `new Date()` return NaN. Now uses `new Date(ts)` directly with an `isNaN` guard before displaying.
+- `backend/src/llm/recommender.py` — `_has_recent_rec` now accepts optional `player_name` and guards by player name (joining cards table) instead of card_id only. This prevents the same player appearing twice from different card versions (e.g. base vs TOTS). Call site updated to pass `player_name=card["player_name"]` with the 10h guard.
+- `backend/src/llm/ask.py` — Added FC27 suppression line to `_SYSTEM_PROMPT`: "Do NOT reference FC27, the next FIFA game, or next-game launch timing."
+- Dedup script run directly on DB: 195 duplicate active recommendations deleted, keeping only the most recent per player_name + platform.
+- 123/123 tests pass.
+
+**Next:** Let scheduler run overnight with the new player-name dedup guard. Verify recommendations list stays clean (no dupes). Then Phase 3 UI sign-off walk-through.
+
+**Gotchas:**
+- `_has_recent_rec` join on `cards` means fodder recs (card_id=NULL) still fall through to the card_id path — correct, fodder uses the `reasoning LIKE` check in `_fodder_recommendations` instead.
+- 195 dupes were present (Bruno Fernandes had 9 copies). The guard was broken from the start because multiple card versions (TOTS vs base) had different card_ids but same player.
+
+**Changed files:**
+- `frontend/electron/db-queries.cjs`
+- `backend/src/llm/recommender.py`
+- `backend/src/llm/ask.py`
+
 ### 2026-04-27 — session 24
 **Goal:** Fix candidate selection (100% AVOID problem), suppress FC27 context in short/medium recs, audit and reduce LLM call costs, add "next eval" indicator to stats bar.
 

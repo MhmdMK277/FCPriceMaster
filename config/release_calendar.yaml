@@ -1,8 +1,19 @@
 # Known annual promo windows for EA FC Ultimate Team.
 # Dates are approximate; confirmed dates come from EA announcements (signals table).
-# Used to inject "T-N days from promo X" context into LLM prompts.
+# Used to inject promo proximity and end-of-cycle context into LLM prompts.
 
-game_edition: fc26
+# Game cycle config — update this each year when a new game launches.
+game_cycle:
+  current_game: "FC26"
+  next_game_launch: "2026-09-26"  # approximate; update when EA announces
+  next_game_name: "FC27"
+
+# End-of-cycle events
+end_of_cycle:
+  # FUTTIES: EA's end-of-cycle celebration. Historically late July / August.
+  # Repeatable 85x10 SBC spikes 85-rated demand and floods all other supply.
+  futties_window_start: "07-18"  # MM-DD — approximate; update when EA announces
+  futties_window_end: "09-01"    # runs until new game launch window
 
 promos:
   - name: Winter Wildcards
@@ -30,7 +41,14 @@ promos:
     window_end: "06-20"
     notes: Team of the Season; league by league rollout; biggest sustained market event
 
-  - name: FC27 Launch
+  - name: FUTTIES
+    window_start: "07-18"
+    window_end: "09-01"
+    category: "end_of_cycle"
+    notes: "Repeatable 85x10 SBC active. 85-rated cards spike. All other cards face severe supply flood."
+
+  - name: Next Game Launch
     window_start: "09-25"
     window_end: "10-05"
-    notes: New game launch; FC26 market collapses post-launch
+    category: "end_of_cycle"
+    notes: New game launch; current game market collapses post-launch

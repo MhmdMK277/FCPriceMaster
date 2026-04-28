@@ -175,36 +175,86 @@ def _fodder_context(con: sqlite3.Connection, text: str, platform: str) -> list[d
 # ---------------------------------------------------------------------------
 
 def _calendar_context() -> dict[str, Any]:
-    """Return current promo proximity from release_calendar.yaml."""
+    """Return promo proximity and end-of-cycle context from release_calendar.yaml."""
+    from datetime import date as _date
+
     try:
         with open(_CALENDAR_PATH, encoding="utf-8") as f:
             cal = yaml.safe_load(f)
     except OSError:
-        return {"today": datetime.now(timezone.utc).date().isoformat(), "promos": []}
+        return {
+            "today": datetime.now(timezone.utc).date().isoformat(),
+            "days_to_next_launch": None,
+            "end_of_cycle_phase": "none",
+            "futties_active": False,
+            "futties_days_until": None,
+            "promos": [],
+        }
 
     today = datetime.now(timezone.utc).date()
-    today_mmdd = today.strftime("%m-%d")
+
+    # --- next game launch ---
+    days_to_next_launch: int | None = None
+    end_of_cycle_phase = "none"
+    game_cycle = cal.get("game_cycle", {})
+    launch_str = game_cycle.get("next_game_launch", "")
+    if launch_str:
+        try:
+            launch_date = _date.fromisoformat(str(launch_str))
+            days_to_next_launch = (launch_date - today).days
+            if days_to_next_launch <= 0:
+                end_of_cycle_phase = "late"
+            elif days_to_next_launch < 30:
+                end_of_cycle_phase = "late"
+            elif days_to_next_launch < 60:
+                end_of_cycle_phase = "mid"
+            elif days_to_next_launch < 120:
+                end_of_cycle_phase = "early"
+            else:
+                end_of_cycle_phase = "none"
+        except (ValueError, TypeError):
+            pass
+
+    # --- FUTTIES window ---
+    futties_active = False
+    futties_days_until: int | None = None
+    eoc = cal.get("end_of_cycle", {})
+    futties_start_mmdd = eoc.get("futties_window_start", "")
+    futties_end_mmdd = eoc.get("futties_window_end", "")
+    if futties_start_mmdd and futties_end_mmdd:
+        try:
+            year = today.year
+            fs = _date(year, int(futties_start_mmdd[:2]), int(futties_start_mmdd[3:]))
+            fe = _date(year, int(futties_end_mmdd[:2]), int(futties_end_mmdd[3:]))
+            if fe < today:
+                fs = _date(year + 1, int(futties_start_mmdd[:2]), int(futties_start_mmdd[3:]))
+                fe = _date(year + 1, int(futties_end_mmdd[:2]), int(futties_end_mmdd[3:]))
+            futties_active = fs <= today <= fe
+            futties_days_until = (fs - today).days if not futties_active else 0
+        except (ValueError, TypeError):
+            pass
+
+    # --- promo list ---
     promo_context = []
     for promo in cal.get("promos", []):
         window_start = promo.get("window_start", "")
         window_end = promo.get("window_end", "")
         name = promo.get("name", "")
+        category = promo.get("category", "")
         if not window_start:
             continue
-        # Build datetime for this year (or next year if window already passed)
         year = today.year
         try:
-            from datetime import date
-            start = date(year, int(window_start[:2]), int(window_start[3:]))
-            end = date(year, int(window_end[:2]), int(window_end[3:]))
+            start = _date(year, int(window_start[:2]), int(window_start[3:]))
+            end = _date(year, int(window_end[:2]), int(window_end[3:]))
             if start < today and end < today:
-                # Check if it recurs next year
-                start = date(year + 1, int(window_start[:2]), int(window_start[3:]))
-                end = date(year + 1, int(window_end[:2]), int(window_end[3:]))
+                start = _date(year + 1, int(window_start[:2]), int(window_start[3:]))
+                end = _date(year + 1, int(window_end[:2]), int(window_end[3:]))
             days_until = (start - today).days
             in_window = start <= today <= end
             promo_context.append({
                 "name": name,
+                "category": category,
                 "days_until_start": days_until if days_until >= 0 else None,
                 "in_window": in_window,
                 "window_start": str(start),
@@ -213,14 +263,22 @@ def _calendar_context() -> dict[str, Any]:
         except (ValueError, TypeError):
             continue
 
-    # Only include promos starting within 21 days; cap at 3
-    upcoming = [
-        p for p in promo_context
-        if p["days_until_start"] is not None and p["days_until_start"] <= 21
-    ]
+    # FUTTIES and end-of-cycle promos: always include when ≤90 days out or active.
+    # Regular promos: include when ≤21 days.
+    upcoming = []
+    for p in promo_context:
+        d = p.get("days_until_start")
+        is_eoc = p.get("category") == "end_of_cycle"
+        if p["in_window"] or (d is not None and d <= (90 if is_eoc else 21)):
+            upcoming.append(p)
+
     return {
         "today": today.isoformat(),
-        "promos": sorted(upcoming, key=lambda p: p["days_until_start"])[:3],
+        "days_to_next_launch": days_to_next_launch,
+        "end_of_cycle_phase": end_of_cycle_phase,
+        "futties_active": futties_active,
+        "futties_days_until": futties_days_until,
+        "promos": sorted(upcoming, key=lambda p: (p["days_until_start"] or 0))[:5],
     }
 
 
@@ -276,12 +334,18 @@ def build_context(text: str, platform: str, db_path: str | None = None) -> dict[
             prices = _price_context(con, card["id"], platform)
             enriched_cards.append({**card, **attr_dict, **prices})
 
+        cal = _calendar_context()
         return {
             "mentioned_cards": enriched_cards,
             "fodder_context": _fodder_context(con, text, platform),
-            "release_calendar": _calendar_context(),
+            "release_calendar": cal,
             "recent_signals": _recent_signals(con, card_ids),
             "platform": platform,
+            # top-level shortcuts for easy consumption in format helpers
+            "days_to_next_launch": cal.get("days_to_next_launch"),
+            "end_of_cycle_phase": cal.get("end_of_cycle_phase", "none"),
+            "futties_active": cal.get("futties_active", False),
+            "futties_days_until": cal.get("futties_days_until"),
         }
     finally:
         con.close()

@@ -31,6 +31,19 @@ Single file, zero admin, perfect for local. WAL mode allows the scraper to write
 
 When UI needs to trigger an action (e.g. "force refresh this card," "dismiss this recommendation"), a small localhost FastAPI is added in a later phase — not before.
 
+### End-of-cycle and FUTTIES calendar awareness (2026-04-28)
+`config/release_calendar.yaml` now contains a `game_cycle` block (current game, next launch date, next game name) and an `end_of_cycle` block (FUTTIES window start/end). These are the only places that ever reference a specific game name or date — code always reads them generically. Update the YAML each year when EA announces the new game launch date; no code changes required.
+
+`context_builder._calendar_context()` computes four new fields injected into every LLM call:
+- `days_to_next_launch` — integer days until next game launches
+- `end_of_cycle_phase` — "none" / "early" (60-120d) / "mid" (30-60d) / "late" (<30d)
+- `futties_active` — True when today is within the FUTTIES window
+- `futties_days_until` — days until FUTTIES starts (0 when active)
+
+Both system prompts (`ask.py`, `recommender.py`) now have tiered rules that key on these values rather than a blanket "do not mention FC27" instruction. FUTTIES-specific rules: 85-rated cards get a STRONG BUY bias; all others get AVOID bias during the window.
+
+`recommender._get_candidates()` adds Pool D (FUTTIES 85-rated) when `futties_active=True`, sourcing 85-rated cards from `card_attributes` joined to `price_snapshots`. A structural (non-LLM) `_futties_85_recommendation()` is emitted once per 6h per platform when FUTTIES is active, bypassing the standard fodder LLM path since the demand is structural, not probability-based.
+
 ### Python backend as a single long-lived process
 APScheduler inside one process running all scrapers on their own cadences. Graceful shutdown on SIGINT. Electron main process spawns it as a child on startup (with a user-togglable off switch).
 

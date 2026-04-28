@@ -256,7 +256,7 @@ function getRecommendationStats(db, { days = 7 } = {}) {
     ).get();
     let next_eval_in_hours = null;
     if (lastEvalRow && lastEvalRow.last_eval) {
-      const hoursSince = (Date.now() - new Date(lastEvalRow.last_eval + 'Z').getTime()) / 3600000;
+      const hoursSince = (Date.now() - new Date(lastEvalRow.last_eval).getTime()) / 3600000;
       next_eval_in_hours = Math.max(0, Math.round(6 - hoursSince));
     }
 
@@ -268,9 +268,10 @@ function getRecommendationStats(db, { days = 7 } = {}) {
     ).get();
     let oldest_pending_hours = null;
     if (oldestRow && oldestRow.oldest_ts) {
-      oldest_pending_hours = Math.round(
-        (Date.now() - new Date(oldestRow.oldest_ts + 'Z').getTime()) / 3600000
-      );
+      const parsed = new Date(oldestRow.oldest_ts).getTime();
+      if (!isNaN(parsed)) {
+        oldest_pending_hours = Math.round((Date.now() - parsed) / 3600000);
+      }
     }
 
     return { total_evaluated, correct, incorrect, neutral, accuracy_pct, buy_total, avoid_total,
