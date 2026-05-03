@@ -132,12 +132,20 @@ def _db_path_from_env() -> str:
 # Persistence helpers
 # ---------------------------------------------------------------------------
 
-def _upsert_card(con: sqlite3.Connection, card_key: str, player_name: str, version_name: str) -> int:
-    """Insert card if not exists, return its id."""
+def _upsert_card(
+    con: sqlite3.Connection,
+    card_key: str,
+    player_name: str,
+    version_name: str,
+    tradeable: int = 1,
+) -> int:
+    """Insert card if not exists, return its id. If tradeable=0 and card exists, mark it non-tradeable."""
     con.execute(
-        "INSERT OR IGNORE INTO cards (card_key, player_name, version_name, game_edition) VALUES (?,?,?,?)",
-        (card_key, player_name, version_name, "fc26"),
+        "INSERT OR IGNORE INTO cards (card_key, player_name, version_name, game_edition, tradeable) VALUES (?,?,?,?,?)",
+        (card_key, player_name, version_name, "fc26", tradeable),
     )
+    if tradeable == 0:
+        con.execute("UPDATE cards SET tradeable=0 WHERE card_key=?", (card_key,))
     row = con.execute("SELECT id FROM cards WHERE card_key=?", (card_key,)).fetchone()
     return row[0]
 
@@ -259,6 +267,177 @@ class FutGGScraper(PlaywrightScraperBase):
 
         except Exception as exc:
             _write_health(self.db_path, self.SOURCE, success=False, error_text=str(exc))
+            raise
+        finally:
+            await page.close()
+
+    # ------------------------------------------------------------------
+    # Rating-tier card coverage
+    # ------------------------------------------------------------------
+
+    async def fetch_cards_by_rating(
+        self,
+        rating_min: int,
+        rating_max: int,
+        platform: Platform,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """
+        Navigate /players/?overall__gte={min}&overall__lte={max}&sorts=current_price&platform={p},
+        extract up to `limit` cards sorted cheapest-first, upsert into cards + card_attributes,
+        insert price_snapshots for tradeable cards.
+
+        Non-tradeable cards (lock icon or "non-tradeable" text detected) are upserted with
+        tradeable=0 and receive no price snapshot. They are excluded from the return list.
+
+        Returns list of dicts for tradeable cards only.
+        """
+        plat_param = "pc" if platform == "pc" else "console"
+        url = (
+            f"https://www.fut.gg/players/"
+            f"?overall__gte={rating_min}&overall__lte={rating_max}"
+            f"&sorts=current_price&platform={plat_param}"
+        )
+        source = f"futgg_tier"
+        page = await self._new_page()
+        try:
+            await self._navigate(page, url)
+            try:
+                await page.wait_for_selector('a[href*="/players/"][href*="/26-"]', timeout=60000)
+            except Exception:
+                pass
+
+            # Prices load via XHR after the initial DOM renders, so badges initially show only
+            # "POS\nRATING" (2 parts). Wait until at least one badge has a numeric price (3 parts,
+            # third part not EXTINCT/N/A/LEVEL). Fall through if all cards are EXTINCT/untradeable.
+            try:
+                await page.wait_for_function(
+                    """() => {
+                        var badges = document.querySelectorAll('a[href*="/26-"] .font-din');
+                        for (var i = 0; i < badges.length; i++) {
+                            var lines = badges[i].innerText.trim().split('\\n')
+                                .map(function(l){return l.trim();}).filter(Boolean);
+                            if (lines.length >= 3) {
+                                var p = lines[2].toUpperCase();
+                                if (p !== 'EXTINCT' && p !== 'N/A' && p.indexOf('LEVEL') < 0) return true;
+                            }
+                        }
+                        return false;
+                    }""",
+                    timeout=12000,
+                )
+            except Exception:
+                pass  # all cards may be EXTINCT/non-tradeable; proceed to extract what we have
+
+            # Single JS pass — fetch up to limit*5 anchors; Python post-filters to limit valid prices.
+            # Many cards on FUT.GG sorted pages are EXTINCT or non-tradeable evolutions so we
+            # over-fetch and discard those without a valid numeric price.
+            max_examine = min(limit * 5, 500)
+            js = """(maxExamine) => {
+  var anchors = document.querySelectorAll('a[href*="/players/"][href*="/26-"]');
+  var results = [];
+  for (var i = 0; i < anchors.length && i < maxExamine; i++) {
+    var a = anchors[i];
+    var href = a.getAttribute('href') || '';
+
+    // Badge: .font-din contains "POS\\nRATING\\nPRICE"
+    var badge = a.querySelector('.font-din');
+    var badgeText = badge ? badge.innerText : '';
+
+    // Card image alt: "PlayerName - Rating - Version"
+    var imgs = a.querySelectorAll('img[alt]');
+    var alt = '';
+    for (var j = 0; j < imgs.length; j++) {
+      var a2 = imgs[j].getAttribute('alt') || '';
+      if (a2.indexOf(' - ') >= 0 && /\\d/.test(a2)) { alt = a2; break; }
+    }
+
+    // Untradeable detection: lock element or text
+    var isUntradeable = false;
+    var lockEl = a.querySelector('[class*="lock"],[data-tradeable="false"],[aria-label*="tradeable"],[aria-label*="Tradeable"]');
+    if (lockEl) isUntradeable = true;
+    if (!isUntradeable) {
+      var txt = a.innerText.toLowerCase();
+      if (txt.indexOf('non-tradeable') >= 0 || txt.indexOf('not tradeable') >= 0) isUntradeable = true;
+    }
+
+    results.push({href: href, badgeText: badgeText, alt: alt, isUntradeable: isUntradeable});
+  }
+  return results;
+}"""
+            raw_cards: list[dict] = await page.evaluate(js, max_examine)
+
+            if not raw_cards:
+                logger.warning(
+                    "fetch_cards_by_rating(%d-%d, %s): JS evaluate returned no cards",
+                    rating_min, rating_max, platform,
+                )
+                _write_health(self.db_path, source, success=False,
+                              error_text=f"No cards for {rating_min}-{rating_max} {platform}")
+                return []
+
+            results: list[dict[str, Any]] = []
+            con = sqlite3.connect(self.db_path)
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            with con:
+                for raw in raw_cards:
+                    href = raw.get("href", "")
+                    card_key = _card_key_from_href(href)
+                    if not card_key:
+                        continue
+
+                    # Parse badge → position, rating, price
+                    badge_text = raw.get("badgeText", "")
+                    position, rating_f, bin_price = _parse_badge(badge_text)
+
+                    # Parse alt → player_name, version_name
+                    alt = raw.get("alt", "")
+                    player_name, version_name = _player_name_from_alt(alt) if alt else ("Unknown", "Unknown")
+
+                    is_untradeable = bool(raw.get("isUntradeable", False))
+
+                    # Cards with no price and no explicit untradeable indicator: skip snapshot
+                    tradeable_flag = 0 if is_untradeable else 1
+
+                    card_id = _upsert_card(con, card_key, player_name, version_name, tradeable=tradeable_flag)
+
+                    attrs: dict[str, str] = {}
+                    if position:
+                        attrs["position"] = position
+                    if rating_f is not None:
+                        attrs["rating"] = str(int(rating_f))
+                    _upsert_attributes(con, card_id, attrs)
+
+                    if tradeable_flag and bin_price is not None and _is_valid_fut_price(bin_price):
+                        con.execute(
+                            """INSERT INTO price_snapshots
+                               (card_id, platform, game_edition, ts_utc, bin_price, source)
+                               VALUES (?,?,?,?,?,?)""",
+                            (card_id, platform, "fc26", ts, bin_price, "futgg_tier"),
+                        )
+                        results.append({
+                            "card_key": card_key,
+                            "player_name": player_name,
+                            "version_name": version_name,
+                            "platform": platform,
+                            "position": position,
+                            "rating": int(rating_f) if rating_f is not None else None,
+                            "bin_price": bin_price,
+                            "tradeable": 1,
+                        })
+                        if len(results) >= limit:
+                            break
+
+            _write_health(self.db_path, source, success=True, records_written=len(results))
+            logger.info(
+                "fetch_cards_by_rating(%d-%d, %s): %d tradeable cards persisted",
+                rating_min, rating_max, platform, len(results),
+            )
+            return results
+
+        except Exception as exc:
+            _write_health(self.db_path, source, success=False, error_text=str(exc))
             raise
         finally:
             await page.close()

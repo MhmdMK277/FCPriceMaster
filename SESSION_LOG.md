@@ -21,6 +21,69 @@ Required fields per entry: date, session number, goal, done, next, gotchas, chan
 
 <!-- Entries go below this line, newest first -->
 
+### 2026-05-03 — session 28
+**Goal:** Card coverage expansion (rating-tier scraper), smart manual trigger guard, recommendation de-duplication, budget UI, circuit breaker, tradeable filtering.
+
+**Done:**
+- `backend/src/db/migrations/0007_tradeable.sql` (NEW) — `ALTER TABLE cards ADD COLUMN tradeable INTEGER NOT NULL DEFAULT 1`. Migration applied to live DB.
+- `backend/src/scrapers/futgg.py` — Added `fetch_cards_by_rating(rating_min, rating_max, platform, limit)`: navigates `?overall__gte=N&overall__lte=N&sorts=current_price&platform=p`, single JS evaluate pass over up to `limit*5` anchors, inserts tradeable cards + price_snapshots; non-tradeable cards (lock icon / "non-tradeable" text) upserted with `tradeable=0`, excluded from return list and snapshots. `_upsert_card()` updated with `tradeable=1` param. **Key fix:** added `page.wait_for_function` before JS evaluate to wait until at least one badge has a numeric price — prices load async via XHR and previously only pos+rating were rendering at extract time.
+- `backend/src/llm/recommender.py` — `_get_candidates()` all 4 pools filter `COALESCE(c.tradeable, 1) = 1`. Added `_has_worthy_candidates(candidates, platform, db_path)`: skips LLM if no candidates, all candidates have recent recs, or 0 signals + <3 candidates. Added `_get_budget_status(db_path)` returning `{spent_today_usd, cap_usd, remaining_usd, can_generate}`.
+- `backend/src/workers/scheduler.py` — Added `job_tier_scrape()` with circuit breaker (`_tier_pause_until` dict; 5 consecutive failures → 2h pause via `_get_consecutive_failures()`). Added 5 tier jobs: tier1_pc (85-91, 30min, 200 cards), tier1_console (same, +5min), tier2_pc (82-84, 60min, 100), tier3_pc (92-99, 60min, 50), tier4_pc (78-81, 4h, 50). HTTP trigger handler replaced fire-and-forget with awaitable `_run_recs_with_result()` returning `{status, skipped, reason, recs_added}`.
+- `frontend/electron/db-queries.cjs` — `GET_RECS_DEDUPED_SQL` CTE: `MAX(id)` per player+version with `prior_count`. `getRecommendations()` uses deduped query by default, flat when `showAll=true`. Added `getRecommendationBudgetStatus()`: queries `llm_calls WHERE feature='autonomous'` for today's spend vs cap.
+- `frontend/electron/main.cjs` — IPC handler for `db:getRecommendationBudgetStatus`.
+- `frontend/electron/preload.cjs` — Exposed `getRecommendationBudgetStatus`.
+- `frontend/src/views/Recommendations.tsx` — Budget state + bar (spent/cap/remaining). Refresh button greyed as "Budget used" with tooltip when exhausted. Toast component (info/success/error, 5s auto-dismiss). `skipped` response → info toast; `recs_added>0` → success toast. `prior_count` badge "(N previous)". "Show all history" checkbox.
+- `backend/tests/test_recommender.py` — 8 new tests: untradeable candidates excluded, `_has_worthy_candidates` all-covered/no-signal/valid cases, `_get_budget_status` empty/partial. 134/134 tests passing (was 126).
+
+**Next:** Phase 3 UI sign-off walk-through with owner.
+
+**Gotchas:**
+- `fetch_cards_by_rating` returns very few results for 85-91 and 78-81 ranges — most cards in these tiers are genuinely EXTINCT or Evolution (LEVEL X) at this late stage of EA FC 26's game cycle, not a code bug. The 92-99 tier found 7 tradeable cards on console. The `wait_for_function` fallthrough (12s timeout) is correct behavior when a page genuinely has no priced cards.
+- The deduped recommendations SQL uses `MAX(r.id) GROUP BY player_name, version_name, platform`. If a player has both a BUY and an AVOID rec (different calls), only the most recent call is shown. This is intentional — showing only the current stance.
+- Circuit breaker state is in-memory (`_tier_pause_until` dict). A scheduler restart resets it. This is fine since restarts are rare and the health table provides persistent failure visibility.
+- `_has_worthy_candidates` checks `sig_count` from the `signals` table (last 6h). In a fresh install with no signals, the guard fires unless there are ≥3 candidates. Seeded test data satisfies this.
+
+**Changed files:**
+- `backend/src/db/migrations/0007_tradeable.sql` (NEW)
+- `backend/src/scrapers/futgg.py`
+- `backend/src/llm/recommender.py`
+- `backend/src/workers/scheduler.py`
+- `frontend/electron/db-queries.cjs`
+- `frontend/electron/main.cjs`
+- `frontend/electron/preload.cjs`
+- `frontend/src/views/Recommendations.tsx`
+- `backend/tests/test_recommender.py`
+- `ROADMAP.md`
+- `SESSION_LOG.md`
+
+---
+
+### 2026-05-02 — session 27
+**Goal:** Emergency cost fix — cap LLM spend to safe levels and reset misleading accuracy data.
+
+**Done:**
+- `config/llm_config.yaml` — `daily_cap_usd` 0.50 → 0.03.
+- `backend/src/llm/recommender.py` — `max_recs` default 5 → 3. Added `_check_autonomous_budget()` function (queries `llm_calls WHERE feature='autonomous'`). Added hard guard at top of `generate_recommendations`: if autonomous spend today > $0.02, returns `[]` and logs "Daily autonomous budget exhausted — skipping run."
+- `backend/src/workers/scheduler.py` — `recommendations_pc` changed from `IntervalTrigger(hours=2)` to `CronTrigger(hour=8, minute=0, UTC)`. `recommendations_console` job removed entirely (PC-only for now).
+- DB — Deleted all 916 recommendations and 798 outcomes (reset stale TOTS-crash accuracy counter).
+- 3 new tests added: `test_check_autonomous_budget_returns_zero_when_empty`, `test_check_autonomous_budget_counts_only_autonomous`, `test_generate_recommendations_skips_on_exhausted_autonomous_budget`.
+- 126/126 tests pass.
+
+**Next:** Phase 3 UI sign-off walk-through (still deferred).
+
+**Gotchas:**
+- The $0.02 autonomous hard-stop and $0.03 daily cap are intentionally aggressive. At Haiku rates (~$0.000375/call) the autonomous budget allows ~53 LLM calls/day, the total daily cap ~80. More than enough for 3 recs + Ask queries.
+- `recommendations_console` job is gone from the scheduler. Console platform is still supported by the scraper and the Ask feature — just no autonomous recs running for it until explicitly re-added.
+- Fodder recs (inside `generate_recommendations`) also count against the same autonomous budget via `_check_daily_cap` checks inside `_fodder_recommendations`. The new `_check_autonomous_budget` guard fires before any of that.
+
+**Changed files:**
+- `config/llm_config.yaml`
+- `backend/src/llm/recommender.py`
+- `backend/src/workers/scheduler.py`
+- `backend/tests/test_recommender.py`
+
+---
+
 ### 2026-04-28 — session 26
 **Goal:** FUTTIES market awareness + game-agnostic end-of-cycle config.
 

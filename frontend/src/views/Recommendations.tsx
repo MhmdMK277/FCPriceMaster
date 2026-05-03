@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 
 interface Recommendation {
   id: number;
@@ -13,6 +13,7 @@ interface Recommendation {
   ts_utc: string;
   outcome_verdict: string | null;
   dismissed_at: string | null;
+  prior_count: number;
 }
 
 interface RecStats {
@@ -25,6 +26,18 @@ interface RecStats {
   avoid_total: number;
   next_eval_in_hours: number | null;
   oldest_pending_hours: number | null;
+}
+
+interface BudgetStatus {
+  spent_today_usd: number;
+  cap_usd: number;
+  remaining_usd: number;
+  can_generate: boolean;
+}
+
+interface Toast {
+  message: string;
+  type: 'info' | 'success' | 'error';
 }
 
 const CALL_COLORS: Record<string, string> = {
@@ -58,23 +71,37 @@ function timeAgo(ts: string): string {
 export function Recommendations({ platform }: { platform: string }) {
   const [recs, setRecs] = useState<Recommendation[]>([]);
   const [stats, setStats] = useState<RecStats | null>(null);
+  const [budget, setBudget] = useState<BudgetStatus | null>(null);
   const [showDismissed, setShowDismissed] = useState(false);
+  const [showAll, setShowAll] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [toast, setToast] = useState<Toast | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function showToast(t: Toast) {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast(t);
+    toastTimer.current = setTimeout(() => setToast(null), 5000);
+  }
 
   const load = useCallback(async () => {
     try {
-      const [recsData, statsData] = await Promise.all([
-        (window as any).fcdb.getRecommendations({ platform, limit: 50, activeOnly: !showDismissed }),
+      const [recsData, statsData, budgetData] = await Promise.all([
+        (window as any).fcdb.getRecommendations({
+          platform, limit: 50, activeOnly: !showDismissed, showAll,
+        }),
         (window as any).fcdb.getRecommendationStats({ days: 7 }),
+        (window as any).fcdb.getRecommendationBudgetStatus(),
       ]);
       setRecs(recsData || []);
       setStats(statsData || null);
+      setBudget(budgetData || null);
       setError(null);
     } catch (e: any) {
       setError(e?.message || 'Failed to load');
     }
-  }, [platform, showDismissed]);
+  }, [platform, showDismissed, showAll]);
 
   useEffect(() => {
     load();
@@ -83,12 +110,21 @@ export function Recommendations({ platform }: { platform: string }) {
   }, [load]);
 
   async function handleRefresh() {
+    if (budget && !budget.can_generate) return;
     setGenerating(true);
     setError(null);
     try {
       const res = await (window as any).fcdb.triggerRecommendations({ platform });
-      if (res?.error) setError(res.error);
-      else await load();
+      if (res?.status === 'error') {
+        setError(`Generation failed: ${res.error}`);
+      } else if (res?.skipped) {
+        showToast({ message: `Nothing to generate right now: ${res.reason}`, type: 'info' });
+      } else if (res?.recs_added > 0) {
+        showToast({ message: `${res.recs_added} new recommendation${res.recs_added !== 1 ? 's' : ''} added`, type: 'success' });
+        await load();
+      } else {
+        await load();
+      }
     } catch (e: any) {
       setError(e?.message || 'Failed to trigger');
     } finally {
@@ -103,7 +139,19 @@ export function Recommendations({ platform }: { platform: string }) {
     } catch {}
   }
 
+  const budgetExhausted = budget !== null && !budget.can_generate;
   const visible = showDismissed ? recs : recs.filter(r => !r.dismissed_at);
+
+  const toastBg: Record<string, string> = {
+    info: '#1e3a5f',
+    success: '#14532d',
+    error: '#450a0a',
+  };
+  const toastColor: Record<string, string> = {
+    info: '#93c5fd',
+    success: '#86efac',
+    error: '#fca5a5',
+  };
 
   return (
     <div style={{ padding: '24px', maxWidth: 860, margin: '0 auto' }}>
@@ -112,31 +160,53 @@ export function Recommendations({ platform }: { platform: string }) {
         <h2 style={{ margin: 0, color: '#f1f5f9', fontSize: 22 }}>Recommendations</h2>
         <div style={{ flex: 1 }} />
         <label style={{ color: '#94a3b8', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
-          <input
-            type="checkbox"
-            checked={showDismissed}
-            onChange={e => setShowDismissed(e.target.checked)}
-          />
+          <input type="checkbox" checked={showDismissed} onChange={e => setShowDismissed(e.target.checked)} />
           Show dismissed
         </label>
-        <button
-          onClick={handleRefresh}
-          disabled={generating}
-          style={{
-            background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6,
-            padding: '7px 16px', cursor: generating ? 'not-allowed' : 'pointer',
-            opacity: generating ? 0.6 : 1, fontSize: 13,
-          }}
-        >
-          {generating ? 'Generating…' : 'Refresh'}
-        </button>
+        <label style={{ color: '#94a3b8', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+          <input type="checkbox" checked={showAll} onChange={e => setShowAll(e.target.checked)} />
+          Show all history
+        </label>
+        <div title={budgetExhausted ? `Daily AI budget used ($${budget?.cap_usd.toFixed(2)}). Resets at midnight UTC.` : undefined}>
+          <button
+            onClick={handleRefresh}
+            disabled={generating || budgetExhausted}
+            style={{
+              background: budgetExhausted ? '#334155' : '#3b82f6',
+              color: budgetExhausted ? '#64748b' : '#fff',
+              border: 'none', borderRadius: 6,
+              padding: '7px 16px',
+              cursor: generating || budgetExhausted ? 'not-allowed' : 'pointer',
+              opacity: generating ? 0.6 : 1,
+              fontSize: 13,
+            }}
+          >
+            {generating ? 'Generating…' : budgetExhausted ? 'Budget used' : 'Refresh'}
+          </button>
+        </div>
       </div>
+
+      {/* Toast */}
+      {toast && (
+        <div style={{
+          background: toastBg[toast.type], color: toastColor[toast.type],
+          borderRadius: 8, padding: '10px 16px', marginBottom: 16, fontSize: 13,
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        }}>
+          <span>{toast.message}</span>
+          <span
+            style={{ cursor: 'pointer', marginLeft: 16, opacity: 0.7 }}
+            onClick={() => setToast(null)}
+          >✕</span>
+        </div>
+      )}
 
       {/* Stats bar */}
       {stats && (
         <div style={{
           background: '#1e293b', borderRadius: 8, padding: '10px 16px',
-          marginBottom: 20, display: 'flex', gap: 24, fontSize: 13, color: '#94a3b8',
+          marginBottom: 16, display: 'flex', gap: 24, fontSize: 13, color: '#94a3b8',
+          flexWrap: 'wrap',
         }}>
           <span>Last 7 days: <strong style={{ color: '#f1f5f9' }}>{stats.total_evaluated}</strong> evaluated</span>
           {stats.accuracy_pct !== null && (
@@ -155,6 +225,24 @@ export function Recommendations({ platform }: { platform: string }) {
         </div>
       )}
 
+      {/* Budget bar */}
+      {budget && (
+        <div style={{
+          background: '#1e293b', borderRadius: 8, padding: '8px 16px',
+          marginBottom: 20, display: 'flex', gap: 20, fontSize: 12, color: '#64748b',
+        }}>
+          <span>Daily AI budget: <strong style={{ color: budgetExhausted ? '#ef4444' : '#94a3b8' }}>
+            ${budget.spent_today_usd.toFixed(4)} / ${budget.cap_usd.toFixed(2)}
+          </strong></span>
+          <span>Remaining: <strong style={{ color: budgetExhausted ? '#ef4444' : '#22c55e' }}>
+            ${budget.remaining_usd.toFixed(4)}
+          </strong></span>
+          {budgetExhausted && (
+            <span style={{ color: '#94a3b8' }}>Resets at midnight UTC</span>
+          )}
+        </div>
+      )}
+
       {error && (
         <div style={{ background: '#450a0a', color: '#fca5a5', borderRadius: 8, padding: '10px 16px', marginBottom: 16, fontSize: 13 }}>
           {error}
@@ -164,9 +252,11 @@ export function Recommendations({ platform }: { platform: string }) {
       {visible.length === 0 && !generating && (
         <div style={{ color: '#64748b', textAlign: 'center', marginTop: 60, fontSize: 15 }}>
           No recommendations yet.{' '}
-          <span style={{ color: '#3b82f6', cursor: 'pointer' }} onClick={handleRefresh}>
-            Generate now
-          </span>
+          {!budgetExhausted && (
+            <span style={{ color: '#3b82f6', cursor: 'pointer' }} onClick={handleRefresh}>
+              Generate now
+            </span>
+          )}
         </div>
       )}
 
@@ -208,10 +298,22 @@ export function Recommendations({ platform }: { platform: string }) {
                 </span>
               </div>
 
-              {/* Card name */}
-              <div style={{ color: '#f1f5f9', fontSize: 16, fontWeight: 600, marginBottom: 6 }}>
-                {dismissed ? <s>{rec.card_name} — {rec.version_name}</s> : `${rec.card_name} — ${rec.version_name}`}
-                <span style={{ color: '#475569', fontSize: 12, marginLeft: 10 }}>{rec.platform.toUpperCase()}</span>
+              {/* Card name + prior count */}
+              <div style={{ color: '#f1f5f9', fontSize: 16, fontWeight: 600, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span>
+                  {dismissed
+                    ? <s>{rec.card_name} — {rec.version_name}</s>
+                    : `${rec.card_name} — ${rec.version_name}`}
+                </span>
+                <span style={{ color: '#475569', fontSize: 12 }}>{rec.platform.toUpperCase()}</span>
+                {rec.prior_count > 1 && (
+                  <span style={{
+                    color: '#64748b', fontSize: 11, background: '#0f172a',
+                    borderRadius: 4, padding: '1px 6px',
+                  }}>
+                    {rec.prior_count - 1} previous
+                  </span>
+                )}
               </div>
 
               {/* Prices */}

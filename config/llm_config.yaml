@@ -3,4 +3,4 @@ model: claude-haiku-4-5-20251001
 max_tokens: 1000
 temperature: 0
 # Daily spend cap in USD — application-layer safety net (secondary to Anthropic account cap)
-daily_cap_usd: 0.50
+daily_cap_usd: 0.03

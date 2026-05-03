@@ -18,7 +18,11 @@ from src.llm.recommender import (
     _parse_horizon,
     _get_price_momentum,
     _insert_recommendation,
+    _check_autonomous_budget,
+    _has_worthy_candidates,
+    _get_budget_status,
     evaluate_outcomes,
+    generate_recommendations,
 )
 
 
@@ -314,10 +318,54 @@ def test_evaluate_outcomes_not_reevaluated(db_with_cards):
 # generate_recommendations (mocked LLM)
 # ---------------------------------------------------------------------------
 
+def test_check_autonomous_budget_returns_zero_when_empty(db_with_cards):
+    """No autonomous calls today → budget returns 0.0."""
+    spent = _check_autonomous_budget(db_with_cards)
+    assert spent == 0.0
+
+
+def test_check_autonomous_budget_counts_only_autonomous(db_with_cards):
+    """Only feature='autonomous' rows count toward the autonomous budget."""
+    con = sqlite3.connect(db_with_cards)
+    con.execute(
+        "INSERT INTO llm_calls (model, input_tokens, output_tokens, cost_usd, feature) VALUES (?,?,?,?,?)",
+        ("claude-haiku-4-5-20251001", 100, 50, 0.015, "autonomous"),
+    )
+    con.execute(
+        "INSERT INTO llm_calls (model, input_tokens, output_tokens, cost_usd, feature) VALUES (?,?,?,?,?)",
+        ("claude-haiku-4-5-20251001", 100, 50, 0.010, "ask"),
+    )
+    con.commit()
+    con.close()
+    spent = _check_autonomous_budget(db_with_cards)
+    assert abs(spent - 0.015) < 1e-9
+
+
+def test_generate_recommendations_skips_on_exhausted_autonomous_budget(db_with_cards):
+    """If autonomous spend today > $0.02, generate_recommendations returns [] and skips LLM."""
+    con = sqlite3.connect(db_with_cards)
+    con.execute(
+        "INSERT INTO llm_calls (model, input_tokens, output_tokens, cost_usd, feature) VALUES (?,?,?,?,?)",
+        ("claude-haiku-4-5-20251001", 1000, 200, 0.025, "autonomous"),
+    )
+    con.commit()
+    con.close()
+
+    with patch("src.llm.recommender._load_api_key", return_value="test-key"), \
+         patch("anthropic.Anthropic") as mock_cls:
+        results = generate_recommendations("pc", db_with_cards, max_recs=3)
+        mock_cls.assert_not_called()
+
+    assert results == []
+
+
 def test_generate_recommendations_filters_hold_and_low_confidence(db_with_cards):
     """generate_recommendations should filter hold verdicts and confidence < 60."""
-    card_id = sqlite3.connect(db_with_cards).execute("SELECT id FROM cards LIMIT 1").fetchone()[0]
-    _add_snapshots(db_with_cards, card_id, "pc", 4)
+    # Need 3+ candidates so _has_worthy_candidates passes (no-signal + <3 skips)
+    all_ids = [r[0] for r in sqlite3.connect(db_with_cards).execute("SELECT id FROM cards").fetchall()]
+    for cid in all_ids:
+        _add_snapshots(db_with_cards, cid, "pc", 4)
+    card_id = all_ids[0]
 
     buy_response = MagicMock()
     buy_response.content = [MagicMock(text=json.dumps({
@@ -352,10 +400,165 @@ def test_generate_recommendations_filters_hold_and_low_confidence(db_with_cards)
         # First call: buy (should be included), second: hold (filtered), third: low conf (filtered)
         mock_client.messages.create.side_effect = [buy_response, hold_response, low_conf_response]
 
-        from src.llm.recommender import generate_recommendations
         results = generate_recommendations("pc", db_with_cards, max_recs=10)
 
     # Only the buy with confidence 75 should survive
     assert len(results) == 1
     assert results[0]["call"] == "buy"
     assert results[0]["confidence"] == 75.0
+
+
+# ---------------------------------------------------------------------------
+# tradeable column — untradeable cards excluded from candidates
+# ---------------------------------------------------------------------------
+
+def test_untradeable_card_excluded_from_candidates(tmp_db):
+    """A card with tradeable=0 must never appear in _get_candidates output."""
+    con = sqlite3.connect(tmp_db)
+    # Insert untradeable card
+    con.execute(
+        "INSERT INTO cards (card_key, player_name, version_name, game_edition, tradeable) VALUES (?,?,?,?,?)",
+        ("untr-1", "UntradeablePlayer", "Reward", "fc26", 0),
+    )
+    con.commit()
+    card_id = con.execute("SELECT id FROM cards WHERE card_key='untr-1'").fetchone()[0]
+
+    # Add enough price snapshots to qualify for Pool B and Pool C
+    now = datetime.now(timezone.utc)
+    for i in range(5):
+        ts = (now - timedelta(hours=i * 6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        con.execute(
+            "INSERT INTO price_snapshots (card_id, platform, ts_utc, bin_price, source, game_edition) VALUES (?,?,?,?,?,?)",
+            (card_id, "pc", ts, 50000, "futgg", "fc26"),
+        )
+    con.commit()
+
+    result = _get_candidates(con, "pc")
+    con.close()
+    assert all(r["card_id"] != card_id for r in result), "Untradeable card must not appear in candidates"
+
+
+def test_tradeable_card_appears_in_candidates(tmp_db):
+    """A card with tradeable=1 should appear in candidates when it has price snapshots."""
+    con = sqlite3.connect(tmp_db)
+    con.execute(
+        "INSERT INTO cards (card_key, player_name, version_name, game_edition, tradeable) VALUES (?,?,?,?,?)",
+        ("tr-1", "TradeablePlayer", "TOTS", "fc26", 1),
+    )
+    con.commit()
+    card_id = con.execute("SELECT id FROM cards WHERE card_key='tr-1'").fetchone()[0]
+
+    now = datetime.now(timezone.utc)
+    for i in range(4):
+        ts = (now - timedelta(hours=i * 6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        con.execute(
+            "INSERT INTO price_snapshots (card_id, platform, ts_utc, bin_price, source, game_edition) VALUES (?,?,?,?,?,?)",
+            (card_id, "pc", ts, 80000, "futgg", "fc26"),
+        )
+    con.commit()
+
+    result = _get_candidates(con, "pc")
+    con.close()
+    assert any(r["card_id"] == card_id for r in result), "Tradeable card should appear in candidates"
+
+
+# ---------------------------------------------------------------------------
+# _has_worthy_candidates
+# ---------------------------------------------------------------------------
+
+def test_has_worthy_candidates_empty_returns_false(tmp_db):
+    """Empty candidate list must return (False, reason)."""
+    should_run, reason = _has_worthy_candidates([], "pc", tmp_db)
+    assert should_run is False
+    assert "No candidate" in reason
+
+
+def test_has_worthy_candidates_all_recent_recs_returns_false(db_with_cards):
+    """All candidates have recent recs within 10h → should return (False, reason)."""
+    cards = sqlite3.connect(db_with_cards).execute("SELECT id, player_name, version_name, card_key FROM cards").fetchall()
+    card_id, name, vname, ckey = cards[0]
+
+    # Add a recent recommendation for this card
+    con = sqlite3.connect(db_with_cards)
+    con.execute(
+        "INSERT INTO recommendations (card_id, platform, call, confidence, source) VALUES (?,?,?,?,?)",
+        (card_id, "pc", "buy", 80.0, "llm_autonomous"),
+    )
+    con.commit()
+    con.close()
+
+    candidates = [{"card_id": card_id, "player_name": name, "version_name": vname, "card_key": ckey}]
+    should_run, reason = _has_worthy_candidates(candidates, "pc", db_with_cards)
+    assert should_run is False
+    assert "already have recent" in reason
+
+
+def test_has_worthy_candidates_returns_true_with_fresh_candidate(db_with_cards):
+    """A candidate with no recent rec and some signals → (True, reason)."""
+    cards = sqlite3.connect(db_with_cards).execute("SELECT id, player_name, version_name, card_key FROM cards").fetchall()
+    card_id, name, vname, ckey = cards[0]
+
+    # Add a recent signal so signal_count > 0
+    con = sqlite3.connect(db_with_cards)
+    con.execute(
+        "INSERT INTO signals (source, ts_utc, signal_type, raw_text) VALUES (?,datetime('now'),'tweet','test signal')",
+        ("twitter",),
+    )
+    con.commit()
+    con.close()
+
+    candidates = [{"card_id": card_id, "player_name": name, "version_name": vname, "card_key": ckey}]
+    should_run, reason = _has_worthy_candidates(candidates, "pc", db_with_cards)
+    assert should_run is True
+    assert "candidates ready" in reason
+
+
+def test_has_worthy_candidates_no_signals_too_few_candidates(tmp_db):
+    """0 signals AND < 3 candidates → (False, reason)."""
+    # Two candidates, no signals
+    con = sqlite3.connect(tmp_db)
+    for i in range(2):
+        con.execute(
+            "INSERT INTO cards (card_key, player_name, version_name, game_edition) VALUES (?,?,?,?)",
+            (f"card-{i}", f"Player{i}", "TOTS", "fc26"),
+        )
+    con.commit()
+    cards = con.execute("SELECT id, player_name, version_name, card_key FROM cards").fetchall()
+    con.close()
+
+    candidates = [{"card_id": r[0], "player_name": r[1], "version_name": r[2], "card_key": r[3]} for r in cards]
+    should_run, reason = _has_worthy_candidates(candidates, "pc", tmp_db)
+    assert should_run is False
+    assert "No recent signals" in reason
+
+
+# ---------------------------------------------------------------------------
+# _get_budget_status
+# ---------------------------------------------------------------------------
+
+def test_get_budget_status_shape_when_empty(tmp_db):
+    """Budget status returns correct shape and zero spent when no calls logged."""
+    status = _get_budget_status(tmp_db)
+    assert "spent_today_usd" in status
+    assert "cap_usd" in status
+    assert "remaining_usd" in status
+    assert "can_generate" in status
+    assert status["spent_today_usd"] == 0.0
+    assert status["cap_usd"] == 0.02
+    assert status["remaining_usd"] == 0.02
+    assert status["can_generate"] is True
+
+
+def test_get_budget_status_exhausted(tmp_db):
+    """Budget status shows can_generate=False when spend >= cap."""
+    con = sqlite3.connect(tmp_db)
+    con.execute(
+        "INSERT INTO llm_calls (model, input_tokens, output_tokens, cost_usd, feature) VALUES (?,?,?,?,?)",
+        ("claude-haiku-4-5-20251001", 1000, 200, 0.025, "autonomous"),
+    )
+    con.commit()
+    con.close()
+
+    status = _get_budget_status(tmp_db)
+    assert status["can_generate"] is False
+    assert status["remaining_usd"] == 0.0

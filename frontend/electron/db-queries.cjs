@@ -200,13 +200,49 @@ function getLLMHistory(db, { limit = 10 } = {}) {
 // Recommendations queries
 // ---------------------------------------------------------------------------
 
-const GET_RECS_SQL = `
+// Deduped: for non-fodder cards, show only the most recent rec per player+version.
+// Includes prior_count so the UI can show "(N previous)".
+const GET_RECS_DEDUPED_SQL = `
+  WITH card_latest AS (
+    SELECT MAX(r.id) AS id, COUNT(*) AS prior_count
+    FROM recommendations r
+    JOIN cards c ON c.id = r.card_id
+    WHERE r.platform = ? AND (? = 0 OR r.dismissed_at IS NULL)
+    GROUP BY c.player_name, c.version_name, r.platform
+  ),
+  fodder_all AS (
+    SELECT r.id, 1 AS prior_count
+    FROM recommendations r
+    WHERE r.card_id IS NULL AND r.platform = ? AND (? = 0 OR r.dismissed_at IS NULL)
+  ),
+  combined AS (
+    SELECT id, prior_count FROM card_latest
+    UNION ALL
+    SELECT id, prior_count FROM fodder_all
+  )
   SELECT r.id,
     COALESCE(c.player_name, r.reasoning) AS card_name,
     COALESCE(c.version_name, 'fodder')   AS version_name,
     r.platform, r.call, r.confidence, r.horizon_hours,
     r.target_price, r.reasoning, r.ts_utc, r.dismissed_at,
-    o.verdict AS outcome_verdict
+    o.verdict AS outcome_verdict,
+    com.prior_count
+  FROM combined com
+  JOIN recommendations r ON r.id = com.id
+  LEFT JOIN cards c ON c.id = r.card_id
+  LEFT JOIN outcomes o ON o.recommendation_id = r.id
+  ORDER BY r.ts_utc DESC, r.confidence DESC
+  LIMIT ?`;
+
+// showAll=true: every rec row, no grouping
+const GET_RECS_ALL_SQL = `
+  SELECT r.id,
+    COALESCE(c.player_name, r.reasoning) AS card_name,
+    COALESCE(c.version_name, 'fodder')   AS version_name,
+    r.platform, r.call, r.confidence, r.horizon_hours,
+    r.target_price, r.reasoning, r.ts_utc, r.dismissed_at,
+    o.verdict AS outcome_verdict,
+    1 AS prior_count
   FROM recommendations r
   LEFT JOIN cards c ON c.id = r.card_id
   LEFT JOIN outcomes o ON o.recommendation_id = r.id
@@ -227,11 +263,34 @@ const REC_STATS_SQL = `
   JOIN outcomes o ON o.recommendation_id = r.id
   WHERE r.ts_utc >= datetime('now', ? || ' days')`;
 
-function getRecommendations(db, { platform, limit = 50, activeOnly = true } = {}) {
+function getRecommendations(db, { platform, limit = 50, activeOnly = true, showAll = false } = {}) {
   try {
     const activeFlag = activeOnly ? 1 : 0;
-    return db.prepare(GET_RECS_SQL).all(platform, activeFlag, limit);
+    if (showAll) {
+      return db.prepare(GET_RECS_ALL_SQL).all(platform, activeFlag, limit);
+    }
+    // Deduped: params are (platform, activeFlag, platform, activeFlag, limit)
+    return db.prepare(GET_RECS_DEDUPED_SQL).all(platform, activeFlag, platform, activeFlag, limit);
   } catch { return []; }
+}
+
+function getRecommendationBudgetStatus(db) {
+  const AUTONOMOUS_CAP = 0.02;
+  const today = new Date().toISOString().slice(0, 10);
+  try {
+    const row = db.prepare(
+      `SELECT COALESCE(SUM(cost_usd), 0) AS spent FROM llm_calls WHERE ts_utc >= ? AND feature = 'autonomous'`
+    ).get(today + 'T00:00:00Z');
+    const spent = row ? row.spent : 0;
+    return {
+      spent_today_usd: Math.round(spent * 1e6) / 1e6,
+      cap_usd: AUTONOMOUS_CAP,
+      remaining_usd: Math.max(0, Math.round((AUTONOMOUS_CAP - spent) * 1e6) / 1e6),
+      can_generate: spent <= AUTONOMOUS_CAP,
+    };
+  } catch {
+    return { spent_today_usd: 0, cap_usd: AUTONOMOUS_CAP, remaining_usd: AUTONOMOUS_CAP, can_generate: true };
+  }
 }
 
 function dismissRecommendation(db, { id } = {}) {
@@ -282,5 +341,5 @@ function getRecommendationStats(db, { days = 7 } = {}) {
 module.exports = {
   getTopMovers, searchCards, getCardDetail, getScraperHealth, getRecentSignals,
   getFodderSummary, getFodderSnapshot, getFodderByRating, getFodderHistory, getLLMHistory,
-  getRecommendations, dismissRecommendation, getRecommendationStats,
+  getRecommendations, dismissRecommendation, getRecommendationStats, getRecommendationBudgetStatus,
 };

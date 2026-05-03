@@ -5,7 +5,8 @@ const fs = require('fs');
 const { getTopMovers, searchCards, getCardDetail, getScraperHealth, getRecentSignals,
         getFodderSummary, getFodderSnapshot, getFodderByRating, getFodderHistory,
         getLLMHistory,
-        getRecommendations, dismissRecommendation, getRecommendationStats } = require('./db-queries.cjs');
+        getRecommendations, dismissRecommendation, getRecommendationStats,
+        getRecommendationBudgetStatus } = require('./db-queries.cjs');
 
 app.setName('FCPriceMaster');
 
@@ -394,9 +395,10 @@ ipcMain.handle('db:getFodderSnapshot',  (_e, opts) => getFodderSnapshot(openDb()
 ipcMain.handle('db:getFodderByRating',  (_e, opts) => getFodderByRating(openDb(), opts));
 ipcMain.handle('db:getFodderHistory',   (_e, opts) => getFodderHistory(openDb(), opts));
 ipcMain.handle('db:getLLMHistory', (_e, opts) => getLLMHistory(openWriteDb(), opts));
-ipcMain.handle('db:getRecommendations',     (_e, opts) => getRecommendations(openDb(), opts));
-ipcMain.handle('db:dismissRecommendation',  (_e, opts) => dismissRecommendation(openWriteDb(), opts));
-ipcMain.handle('db:getRecommendationStats', (_e, opts) => getRecommendationStats(openDb(), opts));
+ipcMain.handle('db:getRecommendations',           (_e, opts) => getRecommendations(openDb(), opts));
+ipcMain.handle('db:dismissRecommendation',        (_e, opts) => dismissRecommendation(openWriteDb(), opts));
+ipcMain.handle('db:getRecommendationStats',       (_e, opts) => getRecommendationStats(openDb(), opts));
+ipcMain.handle('db:getRecommendationBudgetStatus', ()        => getRecommendationBudgetStatus(openDb()));
 
 ipcMain.handle('db:triggerRecommendations', async (_e, { platform } = {}) => {
   try {
@@ -497,6 +499,7 @@ if (isSelfTest) {
       const llmHistory   = getLLMHistory(openWriteDb(), { limit: 5 });
       const recsList     = getRecommendations(openDb(), { platform: 'pc', limit: 10, activeOnly: true });
       const recsStats    = getRecommendationStats(openDb(), { days: 7 });
+      const recsBudget   = getRecommendationBudgetStatus(openDb());
 
       const result = {
         selftest: true,
@@ -512,8 +515,9 @@ if (isSelfTest) {
           getFodderByRating:{ rating: 85, count: fodderCards.length },
           getFodderHistory: { rating: 85, count: fodderHist.length },
           getLLMHistory:          { count: llmHistory.length },
-          getRecommendations:     { count: recsList.length, rows: recsList },
-          getRecommendationStats: recsStats,
+          getRecommendations:           { count: recsList.length, rows: recsList },
+          getRecommendationStats:       recsStats,
+          getRecommendationBudgetStatus: recsBudget,
         },
       };
       process.stdout.write(JSON.stringify(result, null, 2) + '\n');

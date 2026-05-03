@@ -111,7 +111,7 @@ def _strip_fences(text: str) -> str:
 
 def _get_candidates(con: sqlite3.Connection, platform: str, limit: int = 20) -> list[dict[str, Any]]:
     """
-    3-pool candidate selection:
+    3-pool candidate selection (tradeable=1 cards only):
       Pool A — cards mentioned in signals in the last 48h (up to 8)
       Pool B — cards at or within 10% of their 7-day low (up to 8)
       Pool C — trending cards with 3+ snapshots in 48h (fallback, up to remaining slots)
@@ -134,6 +134,7 @@ def _get_candidates(con: sqlite3.Connection, platform: str, limit: int = 20) -> 
         JOIN signal_card_tags sct ON sct.card_id = c.id
         JOIN signals s ON s.id = sct.signal_id
         WHERE s.ts_utc >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-48 hours')
+          AND COALESCE(c.tradeable, 1) = 1
         GROUP BY c.id
         ORDER BY COUNT(s.id) DESC
         """,
@@ -168,7 +169,8 @@ def _get_candidates(con: sqlite3.Connection, platform: str, limit: int = 20) -> 
         if cid in seen or len(pool_b) >= 8:
             continue
         card = con.execute(
-            "SELECT id, player_name, version_name, card_key FROM cards WHERE id=?", (cid,)
+            "SELECT id, player_name, version_name, card_key FROM cards WHERE id=? AND COALESCE(tradeable, 1) = 1",
+            (cid,),
         ).fetchone()
         if not card:
             continue
@@ -209,6 +211,7 @@ def _get_candidates(con: sqlite3.Connection, platform: str, limit: int = 20) -> 
             JOIN cards c ON c.id = e.card_id
             LEFT JOIN sig_counts sc ON sc.card_id = e.card_id
             WHERE e.card_id NOT IN ({placeholders})
+              AND COALESCE(c.tradeable, 1) = 1
             ORDER BY COALESCE(sc.sig_count, 0) DESC
             LIMIT ?
             """.replace("{placeholders}", ",".join("?" * len(seen)) if seen else "SELECT -1"),
@@ -238,6 +241,7 @@ def _get_candidates(con: sqlite3.Connection, platform: str, limit: int = 20) -> 
                 SELECT DISTINCT card_id FROM price_snapshots
                 WHERE platform=? AND ts_utc >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-7 days')
             )
+            AND COALESCE(c.tradeable, 1) = 1
             AND c.id NOT IN ({placeholders})
             ORDER BY COALESCE(sc.sig_count, 0) DESC
             LIMIT 8
@@ -382,6 +386,68 @@ def _days_since_last_rec_from_card(card: dict[str, Any]) -> int | None:
     return card.get("_days_since_rec")
 
 
+def _has_worthy_candidates(
+    candidates: list[dict[str, Any]],
+    platform: str,
+    db_path: str,
+) -> tuple[bool, str]:
+    """
+    Return (should_run, reason) before spending any API budget.
+    Called inside generate_recommendations before any LLM call.
+    Also used by the HTTP trigger handler to return early skip reasons to the UI.
+    """
+    if not candidates:
+        return False, "No candidate cards found with sufficient price history."
+
+    con = sqlite3.connect(db_path)
+    try:
+        recent_count = sum(
+            1 for c in candidates
+            if _has_recent_rec(con, c["card_id"], platform, hours=10, player_name=c["player_name"])
+        )
+        if recent_count == len(candidates):
+            return False, f"All {len(candidates)} candidates already have recent recommendations."
+
+        sig_count = con.execute(
+            "SELECT COUNT(*) FROM signals WHERE ts_utc >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-6 hours')"
+        ).fetchone()[0]
+    finally:
+        con.close()
+
+    if sig_count == 0 and len(candidates) < 3:
+        return False, "No recent signals and insufficient candidate pool."
+
+    return True, f"{len(candidates)} candidates ready, {sig_count} recent signals."
+
+
+def _get_budget_status(db_path: str) -> dict[str, Any]:
+    """Return autonomous budget status dict for the UI."""
+    spent = _check_autonomous_budget(db_path)
+    cap = 0.02
+    return {
+        "spent_today_usd": round(spent, 6),
+        "cap_usd": cap,
+        "remaining_usd": round(max(0.0, cap - spent), 6),
+        "can_generate": spent <= cap,
+    }
+
+
+def _check_autonomous_budget(db_path: str, limit_usd: float = 0.02) -> float:
+    """Return today's autonomous spend in USD. Returns the amount spent."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    try:
+        con = sqlite3.connect(db_path)
+        row = con.execute(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM llm_calls WHERE ts_utc >= ? AND feature='autonomous'",
+            (today + "T00:00:00Z",),
+        ).fetchone()
+        con.close()
+        return float(row[0]) if row else 0.0
+    except Exception as exc:
+        logger.warning("Could not check autonomous budget: %s", exc)
+        return 0.0
+
+
 def _call_llm(
     client: Any,
     model: str,
@@ -481,13 +547,18 @@ def _futties_85_recommendation(con: sqlite3.Connection, platform: str) -> dict[s
 # Card recommendations
 # ---------------------------------------------------------------------------
 
-def generate_recommendations(platform: str, db_path: str, max_recs: int = 5) -> list[dict[str, Any]]:
+def generate_recommendations(platform: str, db_path: str, max_recs: int = 3) -> list[dict[str, Any]]:
     """
     Generate autonomous buy/avoid recommendations for the given platform.
     Returns list of inserted recommendation dicts.
     """
     if _anthropic is None:
         raise ImportError("anthropic package not installed")
+
+    autonomous_spent = _check_autonomous_budget(db_path)
+    if autonomous_spent > 0.02:
+        logger.info("Daily autonomous budget exhausted ($%.4f >= $0.02) — skipping run.", autonomous_spent)
+        return []
 
     api_key = _load_api_key()
     if not api_key:
@@ -509,6 +580,11 @@ def generate_recommendations(platform: str, db_path: str, max_recs: int = 5) -> 
     try:
         candidates = _get_candidates(con, platform, limit=20)
         logger.info("Recommender: %d candidates for %s", len(candidates), platform)
+
+        should_run, skip_reason = _has_worthy_candidates(candidates, platform, db_path)
+        if not should_run:
+            logger.info("Recommender: skipping — %s", skip_reason)
+            return []
 
         for card in candidates:
             card_id = card["card_id"]

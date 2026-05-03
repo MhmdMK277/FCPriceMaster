@@ -148,16 +148,20 @@ Update status at the end of every session. Do not skip ahead — finish the curr
 ---
 
 ## Phase 3 — Autonomous recommendations
-**Status:** In progress (session 24). Cost + candidate quality fixes applied.
+**Status:** In progress (session 28). Card coverage, smart trigger, dedup, and budget UI shipped.
 
 - [x] `generate_recommendations(platform, db_path, max_recs)` — selects top 20 candidates (3+ snapshots/48h, ranked by signal count), calls Claude Haiku, filters confidence<60 + holds, inserts buys/avoids
 - [x] Fodder sweep (ratings 82-91) — within 10% of 7d low + promo in 14 days
 - [x] `evaluate_outcomes(db_path)` — marks recs >24h old as correct/incorrect/neutral/expired
-- [x] Scheduler jobs: recommendations_pc (every 2h), recommendations_console (offset 60min), outcome_evaluator (every 6h)
-- [x] HTTP trigger server on 127.0.0.1:8765 (POST /run-recommendations) for UI-initiated runs
-- [x] IPC handlers: getRecommendations, dismissRecommendation, getRecommendationStats, triggerRecommendations
+- [x] Scheduler jobs: recommendations_pc (08:00 UTC daily), outcome_evaluator (every 6h)
+- [x] HTTP trigger server on 127.0.0.1:8765 (POST /run-recommendations) for UI-initiated runs — now awaitable, returns `{status, skipped, reason, recs_added}`
+- [x] IPC handlers: getRecommendations, dismissRecommendation, getRecommendationStats, triggerRecommendations, getRecommendationBudgetStatus
 - [x] Recommendations view in UI: stats bar, buy/avoid cards, dismiss, outcome badge, auto-refresh 60s
 - [x] **Session 24:** 3-pool candidate selection (Pool A: signal-mentioned, Pool B: near 7d low, Pool C: trending fallback); max_recs=5; recent_rec guard raised to 10h; calendar promo filter 21d; FC27 context suppressed for non-long horizons; stats bar shows "next eval in Xh" + "oldest pending Yh"
+- [x] **Session 28:** Rating-tier card coverage — `fetch_cards_by_rating()` scrapes 4 rating tiers (78-81/82-84/85-91/92-99) with circuit breaker (5 consecutive failures → 2h pause); `tradeable` DB column + migration 0007; untradeable cards excluded from all recs and snapshots
+- [x] **Session 28:** Smart manual trigger — `_has_worthy_candidates()` guard skips LLM calls when no fresh candidates; budget status IPC + UI bar showing daily spend/cap/remaining; Refresh button greyed with "Budget used" tooltip when exhausted
+- [x] **Session 28:** Recommendation de-duplication — getRecommendations shows only most-recent rec per player+version; `prior_count` badge for "(N previous)"; "Show all history" toggle
+- [x] **Session 28:** Toast notifications on generate (skipped/added/error); `wait_for_function` price-render wait in tier scraper (prices load async via XHR); 134 tests passing
 - [ ] Walk through UI with owner sign-off
 - [ ] Accumulate ≥500 outcomes to seed Phase 4 classifier
 

@@ -29,7 +29,10 @@ from src.scrapers.futgg import FutGGScraper
 from src.workers.reddit_ingest import job_reddit_new, job_reddit_hot
 from src.workers.ea_ingest import job_ea_news
 from src.workers.signal_tagger import job_signal_tagger
-from src.llm.recommender import generate_recommendations, evaluate_outcomes
+from src.llm.recommender import (
+    generate_recommendations, evaluate_outcomes,
+    _get_candidates, _has_worthy_candidates,
+)
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -65,6 +68,26 @@ def setup_logging() -> None:
 
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Circuit breaker state (in-process, resets on restart)
+# ---------------------------------------------------------------------------
+
+_tier_pause_until: dict[str, datetime] = {}
+
+
+def _get_consecutive_failures(db_path: str, source: str) -> int:
+    try:
+        con = sqlite3.connect(db_path)
+        row = con.execute(
+            "SELECT consecutive_failures FROM scraper_health WHERE source=? ORDER BY run_at_utc DESC LIMIT 1",
+            (source,),
+        ).fetchone()
+        con.close()
+        return row[0] if row else 0
+    except Exception:
+        return 0
+
 
 # ---------------------------------------------------------------------------
 # Job functions
@@ -127,6 +150,51 @@ async def job_outcome_evaluator(db_path: str) -> None:
         logger.info("JOB DONE   outcome_evaluator — %d outcomes written", count)
     except Exception as exc:
         logger.error("JOB FAILED outcome_evaluator — %s: %s", type(exc).__name__, exc)
+
+
+async def job_tier_scrape(
+    scraper: FutGGScraper,
+    platform: str,
+    rating_min: int,
+    rating_max: int,
+    limit: int,
+    db_path: str,
+    tier_name: str,
+) -> None:
+    """Scrape a rating tier. Circuit-breaks after 5 consecutive failures (pauses 2h)."""
+    source = f"futgg_tier_{tier_name}"
+
+    pause_until = _tier_pause_until.get(source)
+    if pause_until and datetime.now(timezone.utc) < pause_until:
+        logger.info("JOB SKIP   %s — circuit breaker active until %s", source, pause_until.isoformat())
+        return
+
+    cons_failures = _get_consecutive_failures(db_path, source)
+    if cons_failures >= 5:
+        resume_at = datetime.now(timezone.utc) + timedelta(hours=2)
+        _tier_pause_until[source] = resume_at
+        logger.warning(
+            "JOB PAUSE  %s — %d consecutive failures, pausing 2h until %s",
+            source, cons_failures, resume_at.isoformat(),
+        )
+        return
+
+    start = datetime.now(timezone.utc)
+    logger.info(
+        "JOB START  %s (rating %d-%d, limit=%d, platform=%s)",
+        source, rating_min, rating_max, limit, platform,
+    )
+    try:
+        cards = await scraper.fetch_cards_by_rating(rating_min, rating_max, platform, limit=limit)
+        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+        logger.info("JOB DONE   %s — %d cards in %.1fs", source, len(cards), elapsed)
+        _tier_pause_until.pop(source, None)
+    except Exception as exc:
+        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+        logger.error(
+            "JOB FAILED %s after %.1fs — %s: %s",
+            source, elapsed, type(exc).__name__, exc,
+        )
 
 
 async def job_prune_health(db_path: str) -> None:
@@ -264,23 +332,10 @@ def build_scheduler(
 
     scheduler.add_job(
         job_recommendations,
-        trigger=IntervalTrigger(hours=2, timezone="UTC"),
+        trigger=CronTrigger(hour=8, minute=0, timezone="UTC"),
         args=["pc", db_path],
         id="recommendations_pc",
         name="Autonomous recommendations — PC",
-        next_run_time=now + timedelta(minutes=10),
-        misfire_grace_time=3600,
-        coalesce=True,
-        max_instances=1,
-    )
-
-    scheduler.add_job(
-        job_recommendations,
-        trigger=IntervalTrigger(hours=2, start_date=now + timedelta(hours=1), timezone="UTC"),
-        args=["console", db_path],
-        id="recommendations_console",
-        name="Autonomous recommendations — Console",
-        next_run_time=now + timedelta(minutes=70),
         misfire_grace_time=3600,
         coalesce=True,
         max_instances=1,
@@ -298,6 +353,70 @@ def build_scheduler(
         max_instances=1,
     )
 
+    # --- Card coverage tier jobs (PC-primary; staggered to avoid hammering FUT.GG) ---
+    # Tier 1: 85-91 rated, top 200, every 30 min — primary trading targets
+    scheduler.add_job(
+        job_tier_scrape,
+        trigger=IntervalTrigger(minutes=30, timezone="UTC"),
+        args=[scraper, "pc", 85, 91, 200, db_path, "t1_pc"],
+        id="tier1_pc",
+        name="Card coverage Tier 1 (85-91) — PC",
+        next_run_time=now + timedelta(seconds=300),
+        misfire_grace_time=600,
+        coalesce=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        job_tier_scrape,
+        trigger=IntervalTrigger(minutes=30, timezone="UTC"),
+        args=[scraper, "console", 85, 91, 200, db_path, "t1_console"],
+        id="tier1_console",
+        name="Card coverage Tier 1 (85-91) — Console",
+        next_run_time=now + timedelta(seconds=600),
+        misfire_grace_time=600,
+        coalesce=True,
+        max_instances=1,
+    )
+
+    # Tier 2: 82-84 rated, top 100, every 60 min — fodder range
+    scheduler.add_job(
+        job_tier_scrape,
+        trigger=IntervalTrigger(minutes=60, timezone="UTC"),
+        args=[scraper, "pc", 82, 84, 100, db_path, "t2_pc"],
+        id="tier2_pc",
+        name="Card coverage Tier 2 (82-84) — PC",
+        next_run_time=now + timedelta(seconds=900),
+        misfire_grace_time=600,
+        coalesce=True,
+        max_instances=1,
+    )
+
+    # Tier 3: 92+ rated, top 50, every 60 min — icons / highest TOTS
+    scheduler.add_job(
+        job_tier_scrape,
+        trigger=IntervalTrigger(minutes=60, timezone="UTC"),
+        args=[scraper, "pc", 92, 99, 50, db_path, "t3_pc"],
+        id="tier3_pc",
+        name="Card coverage Tier 3 (92+) — PC",
+        next_run_time=now + timedelta(seconds=1200),
+        misfire_grace_time=600,
+        coalesce=True,
+        max_instances=1,
+    )
+
+    # Tier 4: 78-81 rated, top 50, every 4 hours — cheap SBC fodder
+    scheduler.add_job(
+        job_tier_scrape,
+        trigger=IntervalTrigger(hours=4, timezone="UTC"),
+        args=[scraper, "pc", 78, 81, 50, db_path, "t4_pc"],
+        id="tier4_pc",
+        name="Card coverage Tier 4 (78-81) — PC",
+        next_run_time=now + timedelta(seconds=1500),
+        misfire_grace_time=1800,
+        coalesce=True,
+        max_instances=1,
+    )
+
     return scheduler
 
 
@@ -307,7 +426,28 @@ def build_scheduler(
 
 async def _http_trigger_server(db_path: str) -> None:
     """Minimal asyncio HTTP server on port 8765 for UI-triggered recommendation runs."""
+
+    async def _run_recs_with_result(platform: str, db_path: str) -> dict:
+        """Run recommendations, returning {status, skipped, reason, recs_added}."""
+        try:
+            con = sqlite3.connect(db_path)
+            candidates = _get_candidates(con, platform)
+            con.close()
+
+            should_run, reason = _has_worthy_candidates(candidates, platform, db_path)
+            if not should_run:
+                logger.info("Manual trigger skip (%s): %s", platform, reason)
+                return {"status": "ok", "skipped": True, "reason": reason, "recs_added": 0}
+
+            recs = await asyncio.to_thread(generate_recommendations, platform, db_path)
+            logger.info("Manual trigger done: %d recs for %s", len(recs), platform)
+            return {"status": "ok", "skipped": False, "reason": "", "recs_added": len(recs)}
+        except Exception as exc:
+            logger.error("Manual trigger failed for %s: %s", platform, exc)
+            return {"status": "error", "error": str(exc), "skipped": False, "recs_added": 0}
+
     async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        import json as _json
         try:
             data = await asyncio.wait_for(reader.read(2048), timeout=5.0)
             text = data.decode("utf-8", errors="replace")
@@ -317,18 +457,18 @@ async def _http_trigger_server(db_path: str) -> None:
                 body = data[body_start + 4:].decode("utf-8", errors="replace") if body_start >= 0 else ""
                 platform = "pc"
                 try:
-                    import json as _json
                     payload = _json.loads(body)
                     platform = payload.get("platform", "pc")
                 except Exception:
                     pass
                 logger.info("HTTP trigger: run-recommendations for %s", platform)
-                asyncio.create_task(_run_recs_task(platform, db_path))
-                resp_body = b'{"status":"ok"}'
-                resp = (
-                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
-                    b"Access-Control-Allow-Origin: *\r\nContent-Length: 15\r\n\r\n"
-                ) + resp_body
+                result = await _run_recs_with_result(platform, db_path)
+                resp_body = _json.dumps(result).encode("utf-8")
+                header = (
+                    f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                    f"Access-Control-Allow-Origin: *\r\nContent-Length: {len(resp_body)}\r\n\r\n"
+                ).encode("utf-8")
+                resp = header + resp_body
             else:
                 resp = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"
             writer.write(resp)
@@ -337,13 +477,6 @@ async def _http_trigger_server(db_path: str) -> None:
             logger.debug("HTTP server error: %s", exc)
         finally:
             writer.close()
-
-    async def _run_recs_task(platform: str, db_path: str) -> None:
-        try:
-            recs = await asyncio.to_thread(generate_recommendations, platform, db_path)
-            logger.info("Manual trigger done: %d recs for %s", len(recs), platform)
-        except Exception as exc:
-            logger.error("Manual trigger failed for %s: %s", platform, exc)
 
     try:
         server = await asyncio.start_server(_handle, "127.0.0.1", 8765)
