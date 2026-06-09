@@ -1,5 +1,29 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const electron = require('electron');
 const path = require('path');
+const isSelfTest = process.argv.slice(2).includes('--selftest');
+if (isSelfTest && !electron.app && process.env.FC_SELFTEST_NODE_BRIDGE !== '1') {
+  const { spawnSync } = require('child_process');
+  const electronBin = typeof electron === 'string'
+    ? electron
+    : path.join(__dirname, '..', 'node_modules', '.bin', process.platform === 'win32' ? 'electron.cmd' : 'electron');
+  const result = spawnSync(electronBin, ['.', '--selftest'], {
+    cwd: path.join(__dirname, '..'),
+    stdio: 'inherit',
+    env: { ...process.env, FC_SELFTEST_NODE_BRIDGE: '1' },
+    shell: false,
+    windowsHide: true,
+  });
+  process.exit(result.status ?? 1);
+}
+const app = electron.app || {
+  setName() {},
+  on() {},
+  whenReady: () => Promise.resolve(),
+  exit: (code = 0) => process.exit(code),
+  quit: () => process.exit(0),
+};
+const BrowserWindow = electron.BrowserWindow;
+const ipcMain = electron.ipcMain || { handle() {} };
 const { spawn, execSync } = require('child_process');
 const fs = require('fs');
 const { getTopMovers, searchCards, getCardDetail, getScraperHealth, getRecentSignals,
@@ -66,6 +90,17 @@ app.on('will-quit', () => {
 // ---------------------------------------------------------------------------
 // LLM helpers
 // ---------------------------------------------------------------------------
+
+const NVIDIA_BASE_URL = 'https://integrate.api.nvidia.com/v1';
+
+const NVIDIA_MODELS = {
+  'deepseek-v4-pro': { modelId: 'deepseek-ai/deepseek-v4-pro',       displayName: 'DeepSeek V4 Pro' },
+  'kimi-k2-6':       { modelId: 'moonshotai/kimi-k2.6',              displayName: 'Kimi K2.6' },
+  'qwen3-80b':       { modelId: 'qwen/qwen3-next-80b-a3b-instruct',  displayName: 'Qwen3 80B' },
+  'mistral-small':   { modelId: 'mistralai/mistral-small-4-119b-2603', displayName: 'Mistral Small' },
+  'gpt-oss-120b':    { modelId: 'openai/gpt-oss-120b',               displayName: 'GPT OSS 120B' },
+  'mistral-vision':  { modelId: 'mistralai/mistral-small-4-119b-2603', displayName: 'Mistral Vision' },
+};
 
 function getAnthropicKey() {
   const key = process.env.ANTHROPIC_API_KEY;
@@ -151,7 +186,7 @@ function buildAskContext(db, text, platform) {
 
   // Recent signals
   const recentSignals = db.prepare(
-    `SELECT raw_text, source, ts_utc FROM signals
+    `SELECT raw_text, source, ts_utc, COALESCE(signal_context, 'fut_market') AS signal_context FROM signals
      WHERE raw_text IS NOT NULL ORDER BY ts_utc DESC LIMIT 10`
   ).all();
 
@@ -184,7 +219,7 @@ function formatUserMessage(context, tradeCallText) {
   if (context.recentSignals.length > 0) {
     lines.push('Recent market signals:');
     for (const s of context.recentSignals.slice(0, 5)) {
-      lines.push(`  [${s.source}] ${(s.raw_text || '').slice(0, 120)}`);
+      lines.push(`  [${s.source} | ${s.signal_context || 'fut_market'}] ${(s.raw_text || '').slice(0, 120)}`);
     }
   }
 
@@ -207,6 +242,8 @@ Upcoming calendar events that could affect demand
 Whether the reasoning in the call is sound given current market data
 Hold time vs risk
 
+Signals tagged irl_transfer or irl_result are real-world football news, not FUT market data. A real-world transfer fee (e.g. €150M to Real Madrid) does NOT indicate a FUT card price. A high-profile IRL move may create mild in-game demand — treat as weak positive sentiment only, never as price evidence. Signals tagged promo_leak are high priority.
+
 Always respond in this exact JSON format:
 {
   "verdict": "buy" | "hold" | "avoid",
@@ -219,6 +256,81 @@ Always respond in this exact JSON format:
   "horizon": "short (hours)" | "medium (days)" | "long (weeks)"
 }
 Respond ONLY with the JSON object. No preamble, no markdown fences.`;
+
+function getNvidiaKey() {
+  const key = process.env.NVIDIA_API_KEY;
+  if (key) return key.trim();
+  try {
+    const content = fs.readFileSync(path.join(PROJECT_ROOT, '.env'), 'utf8');
+    for (const line of content.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('NVIDIA_API_KEY')) {
+        const eqIdx = trimmed.indexOf('=');
+        if (eqIdx >= 0) return trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, '');
+      }
+    }
+  } catch {}
+  return null;
+}
+
+function parseVerdictText(raw, providerId, providerName) {
+  let text = raw.trim();
+  if (text.startsWith('```')) {
+    const lines = text.split('\n');
+    const start = lines[0].startsWith('```') ? 1 : 0;
+    const end = lines[lines.length - 1].trim() === '```' ? lines.length - 1 : lines.length;
+    text = lines.slice(start, end).join('\n').trim();
+  }
+  const v = JSON.parse(text);
+  return {
+    provider_id: providerId,
+    provider_name: providerName,
+    action: v.verdict || 'hold',
+    confidence: v.confidence ?? 50,
+    reasoning: v.reasoning || '',
+    price_context: v.price_context || '',
+    risk: v.risk || 'medium',
+    horizon: v.horizon || 'medium (days)',
+    suggested_buy_price: v.suggested_buy_price ?? null,
+    suggested_sell_price: v.suggested_sell_price ?? null,
+    cost_usd: 0,
+  };
+}
+
+async function callNvidiaModel(apiKey, modelId, userMessage, imageB64 = null) {
+  const messages = imageB64
+    ? [{
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageB64}` } },
+          { type: 'text', text: `${LLM_SYSTEM_PROMPT}\n\n${userMessage}` },
+        ],
+      }]
+    : [
+        { role: 'system', content: LLM_SYSTEM_PROMPT },
+        { role: 'user', content: userMessage },
+      ];
+  const body = JSON.stringify({
+    model: modelId,
+    messages,
+    max_tokens: 500,
+    temperature: 0,
+  });
+  const response = await fetch(`${NVIDIA_BASE_URL}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+      'Accept': 'application/json',
+    },
+    body,
+  });
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`NVIDIA API ${response.status}: ${errText.slice(0, 200)}`);
+  }
+  return response.json();
+}
 
 async function callAnthropic(apiKey, userMessage) {
   const body = JSON.stringify({
@@ -259,6 +371,75 @@ function logLLMCall(db, { model, inputTokens, outputTokens, inputText, outputJso
     console.error('[askLLM] Failed to log call:', e.message);
   }
 }
+
+ipcMain.handle('db:getProviderAvailability', () => ({
+  haiku: !!getAnthropicKey(),
+  nvidia: !!(getNvidiaKey()?.startsWith('nvapi-')),
+}));
+
+ipcMain.handle('db:askMultiModel', async (_e, { trade_call, provider_ids, platform = 'pc', image_b64 = null }) => {
+  if (!provider_ids || provider_ids.length === 0) {
+    return { error: 'Select at least one model' };
+  }
+  const context = buildAskContext(openDb(), trade_call, platform);
+  const userMessage = formatUserMessage(context, trade_call);
+
+  const tasks = (provider_ids || []).map(async (providerId) => {
+    if (providerId === 'haiku') {
+      const apiKey = getAnthropicKey();
+      if (!apiKey) return { provider_id: 'haiku', provider_name: 'Claude Haiku', error: 'ANTHROPIC_API_KEY not set', cost_usd: 0 };
+      try {
+        const cfg = readLLMConfig();
+        const wDb = openWriteDb();
+        checkDailyCap(wDb, cfg.daily_cap_usd);
+        const apiResponse = await callAnthropic(apiKey, userMessage);
+        const raw = apiResponse.content[0].text;
+        const result = parseVerdictText(raw, 'haiku', 'Claude Haiku');
+        const inputTokens = apiResponse.usage?.input_tokens || 0;
+        const outputTokens = apiResponse.usage?.output_tokens || 0;
+        result.cost_usd = inputTokens * 0.00000025 + outputTokens * 0.00000125;
+        logLLMCall(wDb, {
+          model: apiResponse.model || 'claude-haiku-4-5-20251001',
+          inputTokens, outputTokens,
+          inputText: trade_call,
+          outputJson: JSON.stringify({ verdict: result.action, confidence: result.confidence, reasoning: result.reasoning }),
+          feature: 'ask',
+        });
+        return result;
+      } catch (e) {
+        return { provider_id: 'haiku', provider_name: 'Claude Haiku', error: e.message, cost_usd: 0 };
+      }
+    }
+
+    const modelInfo = NVIDIA_MODELS[providerId];
+    if (!modelInfo) return { provider_id: providerId, provider_name: providerId, error: `Unknown provider: ${providerId}`, cost_usd: 0 };
+
+    const nvidiaKey = getNvidiaKey();
+    if (!nvidiaKey) return { provider_id: providerId, provider_name: modelInfo.displayName, error: 'NVIDIA_API_KEY not set', cost_usd: 0 };
+
+    try {
+      const apiResponse = await callNvidiaModel(
+        nvidiaKey,
+        modelInfo.modelId,
+        userMessage,
+        providerId === 'mistral-vision' ? image_b64 : null,
+      );
+      const raw = apiResponse.choices?.[0]?.message?.content || '';
+      return parseVerdictText(raw, providerId, modelInfo.displayName);
+    } catch (e) {
+      return { provider_id: providerId, provider_name: modelInfo.displayName, error: e.message, cost_usd: 0 };
+    }
+  });
+
+  const verdicts = await Promise.all(tasks);
+  return {
+    verdicts,
+    context_used: {
+      cards: context.mentionedCards.map(c => c.player_name),
+      signals_count: context.recentSignals.length,
+    },
+  };
+});
 
 // ---------------------------------------------------------------------------
 // Backend process management
@@ -400,9 +581,9 @@ ipcMain.handle('db:dismissRecommendation',        (_e, opts) => dismissRecommend
 ipcMain.handle('db:getRecommendationStats',       (_e, opts) => getRecommendationStats(openDb(), opts));
 ipcMain.handle('db:getRecommendationBudgetStatus', ()        => getRecommendationBudgetStatus(openDb()));
 
-ipcMain.handle('db:triggerRecommendations', async (_e, { platform } = {}) => {
+ipcMain.handle('db:triggerRecommendations', async (_e, { platform, provider_id } = {}) => {
   try {
-    const body = JSON.stringify({ platform: platform || 'pc' });
+    const body = JSON.stringify({ platform: platform || 'pc', provider_id: provider_id || 'haiku' });
     const res = await fetch('http://127.0.0.1:8765/run-recommendations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -480,8 +661,6 @@ ipcMain.handle('backend-running', () => !!backendProc && !backendProc.exitCode);
 // ---------------------------------------------------------------------------
 // Self-test mode  (electron . --selftest)
 // ---------------------------------------------------------------------------
-const isSelfTest = process.argv.slice(2).includes('--selftest');
-
 if (isSelfTest) {
   app.whenReady().then(() => {
     try {
@@ -500,10 +679,32 @@ if (isSelfTest) {
       const recsList     = getRecommendations(openDb(), { platform: 'pc', limit: 10, activeOnly: true });
       const recsStats    = getRecommendationStats(openDb(), { days: 7 });
       const recsBudget   = getRecommendationBudgetStatus(openDb());
+      const providerAvail = { haiku: !!getAnthropicKey(), nvidia: !!(getNvidiaKey()?.startsWith('nvapi-')) };
+      const ipcHandlers = [
+        'db:getTopMovers',
+        'db:searchCards',
+        'db:getCardDetail',
+        'db:getScraperHealth',
+        'db:getRecentSignals',
+        'db:getFodderSummary',
+        'db:getFodderSnapshot',
+        'db:getFodderByRating',
+        'db:getFodderHistory',
+        'db:getLLMHistory',
+        'db:getRecommendations',
+        'db:dismissRecommendation',
+        'db:getRecommendationStats',
+        'db:getRecommendationBudgetStatus',
+        'db:triggerRecommendations',
+        'db:askLLM',
+        'db:askMultiModel',
+        'db:getProviderAvailability',
+      ];
 
       const result = {
         selftest: true,
         db_path: DB_PATH,
+        ipc_handlers_registered: ipcHandlers,
         handlers: {
           getTopMovers:    { platform: 'pc', count: topMovers.length,  rows: topMovers },
           searchCards:     { query: 'Mbappe', count: cards.length,     rows: cards },
@@ -518,6 +719,7 @@ if (isSelfTest) {
           getRecommendations:           { count: recsList.length, rows: recsList },
           getRecommendationStats:       recsStats,
           getRecommendationBudgetStatus: recsBudget,
+          getProviderAvailability:       providerAvail,
         },
       };
       process.stdout.write(JSON.stringify(result, null, 2) + '\n');

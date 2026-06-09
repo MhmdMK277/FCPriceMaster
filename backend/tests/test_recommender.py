@@ -499,9 +499,10 @@ def test_has_worthy_candidates_returns_true_with_fresh_candidate(db_with_cards):
     card_id, name, vname, ckey = cards[0]
 
     # Add a recent signal so signal_count > 0
+    # Use T-format timestamp to match the strftime query in _has_worthy_candidates
     con = sqlite3.connect(db_with_cards)
     con.execute(
-        "INSERT INTO signals (source, ts_utc, signal_type, raw_text) VALUES (?,datetime('now'),'tweet','test signal')",
+        "INSERT INTO signals (source, ts_utc, signal_type, raw_text) VALUES (?,strftime('%Y-%m-%dT%H:%M:%SZ','now'),'tweet','test signal')",
         ("twitter",),
     )
     con.commit()

@@ -9,6 +9,8 @@ server and persists them as signals in SQLite. Bot never joins external servers.
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
 import os
 import signal
@@ -20,8 +22,11 @@ from pathlib import Path
 from typing import Any
 
 import discord
+import httpx
 import yaml
 from dotenv import load_dotenv
+from src.llm.providers.nvidia_provider import NvidiaVisionProvider
+from src.workers.signal_tagger import run_tagging
 
 _ROOT = Path(__file__).parents[3]
 _DB_PATH = str(_ROOT / "data" / "fcpricemaster.db")
@@ -31,6 +36,16 @@ _DOTENV_PATH = _ROOT / ".env"
 _TARGET_GUILD_ID = 1475125630180917268
 
 logger = logging.getLogger(__name__)
+
+_VISION_PROMPT = """This is a screenshot from a FUT (EA Sports FC) trading Discord server.
+Extract the following information if visible in the image:
+- Player name
+- Card version/type (e.g. TOTS, TOTW, Icon, Hero, Gold)
+- Overall rating (number)
+- Suggested action (buy/sell/hold if visible)
+- Any price mentioned
+Return JSON only: {player_name, card_version, rating, action, price, confidence}
+If the image is not a FUT card, return {player_name: null}"""
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +260,80 @@ def persist_signal(
         raise
 
 
+async def process_vision_attachment(
+    conn: sqlite3.Connection,
+    signal_id: int,
+    parsed: dict[str, Any],
+    db_path: str,
+) -> None:
+    """Parse at most one Discord image attachment with Mistral Vision."""
+    image_att = next(
+        (
+            att for att in parsed.get("attachments", [])
+            if (att.get("content_type") or "").lower() in ("image/png", "image/jpeg", "image/jpg")
+            or att.get("url", "").lower().split("?", 1)[0].endswith((".png", ".jpg", ".jpeg"))
+        ),
+        None,
+    )
+    if not image_att:
+        return
+
+    provider = NvidiaVisionProvider()
+    if not provider.is_available():
+        logger.warning("NVIDIA_API_KEY not set; skipping Discord image vision for signal_id=%s", signal_id)
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            resp = await client.get(image_att["url"])
+            resp.raise_for_status()
+            image_b64 = base64.b64encode(resp.content).decode("ascii")
+
+        raw_json = await provider.extract_json(_VISION_PROMPT, image_b64)
+        extracted = json.loads(raw_json)
+    except Exception as exc:
+        logger.warning("Discord image vision failed for signal_id=%s: %s", signal_id, exc)
+        return
+
+    try:
+        conn.execute(
+            "UPDATE signal_attachments SET vision_extracted=? WHERE signal_id=? AND url=?",
+            (raw_json, signal_id, image_att["url"]),
+        )
+        player_name = extracted.get("player_name")
+        if player_name:
+            card_version = extracted.get("card_version") or ""
+            rating = extracted.get("rating") or ""
+            action = extracted.get("action") or ""
+            price = extracted.get("price") or ""
+            image_note = " ".join(
+                str(part).strip()
+                for part in (player_name, card_version, rating)
+                if str(part or "").strip()
+            )
+            action_price = " @ ".join(
+                str(part).strip()
+                for part in (action, price)
+                if str(part or "").strip()
+            )
+            if action_price:
+                image_note = f"{image_note} - {action_price}"
+            appended = f"[IMAGE: {image_note}]"
+            row = conn.execute("SELECT raw_text FROM signals WHERE id=?", (signal_id,)).fetchone()
+            current = row[0] if row and row[0] else ""
+            new_text = f"{current}\n{appended}".strip() if current else appended
+            conn.execute(
+                "UPDATE signals SET raw_text=?, tagged_at=NULL WHERE id=?",
+                (new_text, signal_id),
+            )
+            conn.commit()
+            run_tagging(db_path, batch_size=10)
+        else:
+            conn.commit()
+    except Exception as exc:
+        logger.warning("Failed to persist Discord vision result for signal_id=%s: %s", signal_id, exc)
+
+
 # ---------------------------------------------------------------------------
 # Discord client
 # ---------------------------------------------------------------------------
@@ -315,6 +404,7 @@ class DiscordIngestClient(discord.Client):
                         parsed = parse_message(msg, ch_cfg)
                         result = persist_signal(conn, parsed)
                         if result is not None:
+                            await process_vision_attachment(conn, result, parsed, self.db_path)
                             total += 1
                     except Exception as exc:
                         logger.warning(
@@ -343,6 +433,7 @@ class DiscordIngestClient(discord.Client):
             conn = self._get_conn()
             signal_id = persist_signal(conn, parsed)
             if signal_id is not None:
+                await process_vision_attachment(conn, signal_id, parsed, self.db_path)
                 logger.info(
                     "SIGNAL ingested id=%s type=%s source=%s author=%s text=%.80r",
                     signal_id, parsed["signal_type"], parsed["source_server"],

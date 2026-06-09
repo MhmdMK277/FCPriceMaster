@@ -46,6 +46,15 @@ const CALL_COLORS: Record<string, string> = {
   hold: '#6b7280',
 };
 
+const MODEL_OPTIONS = [
+  { id: 'haiku', label: 'Claude Haiku' },
+  { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
+  { id: 'kimi-k2-6', label: 'Kimi K2.6' },
+  { id: 'qwen3-80b', label: 'Qwen3 80B' },
+  { id: 'mistral-small', label: 'Mistral Small' },
+  { id: 'gpt-oss-120b', label: 'GPT OSS 120B' },
+];
+
 const OUTCOME_LABELS: Record<string, string> = {
   correct: '✅ Correct',
   incorrect: '❌ Incorrect',
@@ -77,6 +86,7 @@ export function Recommendations({ platform }: { platform: string }) {
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
+  const [providerId, setProviderId] = useState(() => localStorage.getItem('rec_provider_id') || 'haiku');
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function showToast(t: Toast) {
@@ -109,12 +119,16 @@ export function Recommendations({ platform }: { platform: string }) {
     return () => clearInterval(t);
   }, [load]);
 
+  useEffect(() => {
+    localStorage.setItem('rec_provider_id', providerId);
+  }, [providerId]);
+
   async function handleRefresh() {
-    if (budget && !budget.can_generate) return;
+    if (providerId === 'haiku' && budget && !budget.can_generate) return;
     setGenerating(true);
     setError(null);
     try {
-      const res = await (window as any).fcdb.triggerRecommendations({ platform });
+      const res = await (window as any).fcdb.triggerRecommendations({ platform, provider_id: providerId });
       if (res?.status === 'error') {
         setError(`Generation failed: ${res.error}`);
       } else if (res?.skipped) {
@@ -139,7 +153,8 @@ export function Recommendations({ platform }: { platform: string }) {
     } catch {}
   }
 
-  const budgetExhausted = budget !== null && !budget.can_generate;
+  const isFreeProvider = providerId !== 'haiku';
+  const budgetExhausted = !isFreeProvider && budget !== null && !budget.can_generate;
   const visible = showDismissed ? recs : recs.filter(r => !r.dismissed_at);
 
   const toastBg: Record<string, string> = {
@@ -166,6 +181,23 @@ export function Recommendations({ platform }: { platform: string }) {
         <label style={{ color: '#94a3b8', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
           <input type="checkbox" checked={showAll} onChange={e => setShowAll(e.target.checked)} />
           Show all history
+        </label>
+        <label style={{ color: '#94a3b8', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+          Model:
+          <select
+            value={providerId}
+            onChange={e => setProviderId(e.target.value)}
+            style={{
+              background: '#0f172a',
+              color: '#e2e8f0',
+              border: '1px solid #334155',
+              borderRadius: 5,
+              padding: '5px 8px',
+              fontSize: 12,
+            }}
+          >
+            {MODEL_OPTIONS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+          </select>
         </label>
         <div title={budgetExhausted ? `Daily AI budget used ($${budget?.cap_usd.toFixed(2)}). Resets at midnight UTC.` : undefined}>
           <button
@@ -231,13 +263,19 @@ export function Recommendations({ platform }: { platform: string }) {
           background: '#1e293b', borderRadius: 8, padding: '8px 16px',
           marginBottom: 20, display: 'flex', gap: 20, fontSize: 12, color: '#64748b',
         }}>
-          <span>Daily AI budget: <strong style={{ color: budgetExhausted ? '#ef4444' : '#94a3b8' }}>
-            ${budget.spent_today_usd.toFixed(4)} / ${budget.cap_usd.toFixed(2)}
-          </strong></span>
-          <span>Remaining: <strong style={{ color: budgetExhausted ? '#ef4444' : '#22c55e' }}>
-            ${budget.remaining_usd.toFixed(4)}
-          </strong></span>
-          {budgetExhausted && (
+          {isFreeProvider ? (
+            <span>Budget: <strong style={{ color: '#22c55e' }}>Free (NVIDIA)</strong></span>
+          ) : (
+            <>
+              <span>Daily AI budget: <strong style={{ color: budgetExhausted ? '#ef4444' : '#94a3b8' }}>
+                ${budget.spent_today_usd.toFixed(4)} / ${budget.cap_usd.toFixed(2)}
+              </strong></span>
+              <span>Remaining: <strong style={{ color: budgetExhausted ? '#ef4444' : '#22c55e' }}>
+                ${budget.remaining_usd.toFixed(4)}
+              </strong></span>
+            </>
+          )}
+          {!isFreeProvider && budgetExhausted && (
             <span style={{ color: '#94a3b8' }}>Resets at midnight UTC</span>
           )}
         </div>

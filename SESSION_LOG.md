@@ -21,6 +21,192 @@ Required fields per entry: date, session number, goal, done, next, gotchas, chan
 
 <!-- Entries go below this line, newest first -->
 
+### 2026-06-09 — session 30
+**Goal:** Multi-model fixes, NVIDIA text/vision wiring, signal-context classifier, Discord vision parsing, Reddit hardening, verification, and GitHub push.
+
+**Done:**
+- Removed forced Haiku behavior in Ask. All models are optional checkboxes; Analyse with zero selected models shows inline `Select at least one model` and does not call IPC/API.
+- Added Ask image attachment flow for single PNG/JPG with thumbnail preview. If an image is attached, Mistral Vision is auto-selected for image analysis and only that provider receives `image_b64`; selected text models still receive text-only prompts.
+- Added `nvidia_credentials/` model-id modules for DeepSeek V4 Pro, Kimi K2.6, Qwen3 80B, Mistral Small, GPT OSS 120B, and `mistral-vision` alias to Mistral Small.
+- Reworked NVIDIA provider layer: `NvidiaTextProvider` is parameterized by `model_id`; `NvidiaVisionProvider` sends Mistral Small multimodal message content and falls back to text-only when no image is provided.
+- Added Recommendations model selector with localStorage persistence. Non-Haiku selections show `Free (NVIDIA)` and pass `provider_id` through Electron IPC, scheduler HTTP trigger, and `generate_recommendations()`.
+- Added migrations `0008_signal_context.sql` and `0009_attachment_vision.sql`; applied to live DB.
+- Added `_classify_signal_context()` rule-based classifier and integrated it into `run_tagging()` before card tagging. Context is passed into LLM context and displayed as colored badges in Signals.
+- Updated Ask and recommender prompts to distinguish `irl_transfer`/`irl_result` from FUT market evidence and treat `promo_leak` as high priority.
+- Added Discord image parsing for one image attachment per message via Mistral Vision; successful extraction updates `signals.raw_text`, stores raw JSON in `signal_attachments.vision_extracted`, and triggers immediate tagging.
+- Hardened Reddit ingestion: explicit root `.env` load, exact one-row disabled behavior when OAuth credentials are missing, OAuth user-agent from `REDDIT_USERNAME`, and per-session skip for missing/private subreddits after old.reddit `/about.json`.
+- Made `node electron/main.cjs --selftest` work by bridging Node selftest execution into the local Electron binary so better-sqlite3 uses the correct ABI.
+
+**Verification:**
+- `uv run pytest tests/ -v` from `backend/`: **149 passed**, 2 Playwright stealth warnings.
+- `node electron/main.cjs --selftest` from `frontend/`: passed; `db:askMultiModel` explicitly listed in `ipc_handlers_registered`.
+- `uv run python -m src.db.migrate` from `backend/`: 0008 and 0009 already applied; 0 new migrations on rerun.
+- Classifier smoke output: `irl_transfer`, `irl_result`, `promo_leak`, `fut_market` for the four required examples.
+- `pnpm build` from `frontend/`: passed; Vite emitted the existing >500KB chunk warning.
+
+**Next:** Run the app visually with owner sign-off for Ask image analysis, model checkboxes, Recommendations model selector, and Signals context badges.
+
+**Gotchas:**
+- The exact requested selftest command uses plain Node, but `better-sqlite3` is rebuilt for Electron ABI. `main.cjs` now detects Node selftest and delegates to `electron.exe . --selftest`.
+- Discord vision gracefully skips when `NVIDIA_API_KEY` is missing or the model call fails; text-only ingestion still completes.
+- Reddit OAuth still requires real `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET`, and preferably `REDDIT_USERNAME` in `.env`.
+
+**Changed files:**
+- `.env.example`
+- `ARCHITECTURE.md`
+- `ROADMAP.md`
+- `SESSION_LOG.md`
+- `backend/src/db/migrations/0008_signal_context.sql` (new)
+- `backend/src/db/migrations/0009_attachment_vision.sql` (new)
+- `backend/src/db/models.py`
+- `backend/src/llm/ask.py`
+- `backend/src/llm/context_builder.py`
+- `backend/src/llm/providers/nvidia_provider.py`
+- `backend/src/llm/providers/registry.py`
+- `backend/src/llm/recommender.py`
+- `backend/src/workers/discord_ingest.py`
+- `backend/src/workers/reddit_ingest.py`
+- `backend/src/workers/scheduler.py`
+- `backend/src/workers/signal_tagger.py`
+- `backend/tests/test_providers.py`
+- `backend/tests/test_signal_tagger.py`
+- `frontend/electron/db-queries.cjs`
+- `frontend/electron/main.cjs`
+- `frontend/src/App.css`
+- `frontend/src/electron.d.ts`
+- `frontend/src/lib/types.ts`
+- `frontend/src/views/Ask.tsx`
+- `frontend/src/views/Recommendations.tsx`
+- `frontend/src/views/Signals.tsx`
+- `nvidia_credentials/` (new model-id package)
+
+---
+
+### 2026-06-09 — session 29 (implementation)
+**Goal:** Fix recommender (38-day outage), build multi-model NVIDIA provider system, fix Reddit 403 gracefully.
+
+**Done:**
+
+**PART 1 — Recommender fix:**
+- Root cause 1: `recommendations_pc` job used `CronTrigger(hour=8, UTC)` with no `next_run_time`. Every other job fires immediately on startup via `next_run_time=now+Ns`, but this one was silently missed if the system started after 09:00 UTC. Fixed: added `next_run_time=now + timedelta(seconds=30)`.
+- Root cause 2 (new finding): Anthropic account has $0 credit balance. The recommender IS running correctly (20 good candidates found, guard passes, all calls attempted), but every LLM call returns 400 "credit balance too low". **Action required: top up Anthropic account at https://console.anthropic.com → Billing.** Spending from April 26–May 2 depleted the balance.
+- Diagnostic confirmed: budget=$0, candidates=20 (all Pool B 7d-low), `_has_worthy_candidates` returns True with reason "20 candidates ready".
+
+**PART 2 — Multi-model NVIDIA provider:**
+- `backend/src/llm/providers/__init__.py` (NEW)
+- `backend/src/llm/providers/base.py` (NEW) — `LLMVerdict` dataclass + `BaseProvider` ABC
+- `backend/src/llm/providers/anthropic_provider.py` (NEW) — wraps existing Haiku logic
+- `backend/src/llm/providers/nvidia_provider.py` (NEW) — `NvidiaProvider` base + 5 model subclasses (DeepSeek V4 Pro, Kimi K2.6, Qwen3 80B, Mistral Small, GPT OSS 120B)
+- `backend/src/llm/providers/registry.py` (NEW) — `PROVIDER_REGISTRY` dict, `get_available_providers()`
+- `config/llm_config.yaml` — added `nvidia:` section
+- `.env.example` (NEW) — template with ANTHROPIC_API_KEY, NVIDIA_API_KEY, DISCORD_BOT_TOKEN, REDDIT credentials
+- `frontend/electron/main.cjs` — added `getNvidiaKey()`, `NVIDIA_MODELS`, `callNvidiaModel()`, `parseVerdictText()`, `db:askMultiModel` IPC handler (parallel Promise.all), `db:getProviderAvailability` IPC handler
+- `frontend/electron/preload.cjs` — exposed `askMultiModel`, `getProviderAvailability`
+- `frontend/src/views/Ask.tsx` — full multi-model UI: provider checkbox row (Haiku always on, NVIDIA models toggle, disabled with "No key" when NVIDIA_API_KEY missing), parallel query button, `MultiVerdictCard` per provider with collapsible reasoning, disagreement banner
+- `frontend/src/lib/types.ts` — added `ProviderAvailability`, `MultiModelVerdict`, `MultiModelResult`
+- `frontend/src/electron.d.ts` — added type declarations for new IPC methods
+
+**PART 3 — Reddit fix:**
+- `backend/src/workers/reddit_ingest.py` rewritten: credential check on startup (module-level `_creds_available` flag), single "disabled" health row (idempotent, not 9,735 rows), OAuth2 client-credentials flow (`POST /api/v1/access_token` with Basic auth), token cached with 1h expiry, `_fetch_subreddit_posts` now takes `token` param and uses oauth.reddit.com when token present
+- `.gitignore` — added `nvidia_build_credentials/` (was missing, contained live API key file)
+
+**Tests:**
+- `backend/tests/test_providers.py` (NEW) — 12 new tests: registry completeness, availability with/without keys, httpx mock for NVIDIA success/fences/missing-fields/non-JSON/no-key, LLMVerdict dataclass
+- `backend/tests/test_recommender.py` — fixed signal timestamp format in `test_has_worthy_candidates_returns_true_with_fresh_candidate` (space-format → T-format)
+- `backend/tests/test_reddit_ingest.py` — updated 2 call sites for new `token` parameter
+- **146/146 tests passing**
+
+**Selftest:** Electron `--selftest` exits 0; `getProviderAvailability` registered and returns `{haiku: true, nvidia: false}` (nvidia false = key not yet in .env).
+
+**Next:**
+1. **IMMEDIATE: Top up Anthropic account credits** — recommender cannot run until credits are added. Go to https://console.anthropic.com → Billing.
+2. Add `NVIDIA_API_KEY=nvapi-4wnM...` to `.env` (key is in `nvidia_build_credentials/` — **do not commit that file**) to enable multi-model Ask.
+3. Add `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` to `.env` (create a script app at https://www.reddit.com/prefs/apps) to restore Reddit signals.
+4. Run dev.ps1, try Ask view with multiple models selected.
+5. Phase 3 UI sign-off walkthrough (still deferred since session 25).
+
+**Gotchas:**
+- The `recommendations_pc` job will now fire ~30s after scheduler start (every startup) AND at 08:00 UTC. If the Anthropic account is topped up, the first run after restart will generate recommendations. The $0.02/day autonomous budget guard still applies.
+- `nvidia_build_credentials/mistral-small-4-119b-2603.py` contains a live NVIDIA API key. It is now gitignored. Copy the key to `.env` as `NVIDIA_API_KEY=nvapi-4wn...` — do not commit the credentials file.
+- Reddit `_disabled_health_written` flag is module-level. If the scheduler is restarted, one more "disabled" row is written. That's fine — it resets the consecutive_failures counter to 0, which is correct (the failure streak was 9,735 — a clean row is better).
+- `_fetch_subreddit_posts` signature changed (new `token` parameter). Two existing tests updated to pass `token=None`.
+- The NVIDIA provider Python module is not yet wired into the autonomous recommender — it's Ask-only for now per spec.
+
+**Changed files:**
+- `.gitignore`
+- `backend/src/workers/scheduler.py`
+- `backend/src/workers/reddit_ingest.py`
+- `backend/src/llm/providers/__init__.py` (NEW)
+- `backend/src/llm/providers/base.py` (NEW)
+- `backend/src/llm/providers/anthropic_provider.py` (NEW)
+- `backend/src/llm/providers/nvidia_provider.py` (NEW)
+- `backend/src/llm/providers/registry.py` (NEW)
+- `backend/tests/test_providers.py` (NEW)
+- `backend/tests/test_recommender.py`
+- `backend/tests/test_reddit_ingest.py`
+- `config/llm_config.yaml`
+- `.env.example` (NEW)
+- `frontend/electron/main.cjs`
+- `frontend/electron/preload.cjs`
+- `frontend/src/views/Ask.tsx`
+- `frontend/src/lib/types.ts`
+- `frontend/src/electron.d.ts`
+- `ARCHITECTURE.md`
+- `ROADMAP.md`
+- `SESSION_LOG.md`
+
+---
+
+### 2026-06-09 — session 29
+**Goal:** Read-only data audit — DB state, scraper health, signal coverage, price depth, LLM cost, Phase 4 readiness.
+
+**Done:**
+- Full DB audit run (all 7 queries). Findings documented below.
+- SESSION_LOG updated with findings.
+
+**DB State (as of 2026-06-09):**
+- **Tradeable cards:** 1,134 | **Total price snapshots:** 581,429 | **Cards with price history:** 762
+- **Fodder snapshots:** 112,904 | **Price data span:** 52 days (2026-04-18 → 2026-06-09)
+- **Signals:** 5,736 total (Reddit 5,179 · Twitter 513 · Discord 38 · EA News 6)
+- **Tagged signals:** 4,819 (84% tagging rate)
+- **Recommendations:** 0 (reset in session 27 on May 2; none generated since)
+- **Outcomes:** 0 | **LLM calls total:** 2,932 calls, $1.2502 USD (all before May 3)
+
+**Critical findings / flags:**
+1. **RECOMMENDER HAS NOT RUN SINCE MAY 2.** Zero LLM calls, zero recommendations for 38 days. Root cause unknown — scheduler IS running (futgg/fodder/tier all healthy today). Candidates: (a) `_has_worthy_candidates` guard blocking silently, (b) timestamp format bug (session 23 gotcha) making Pool B/C return 0 candidates, (c) some other guard condition. Needs investigation next session.
+2. **Reddit 403 — DEAD for 12+ days.** Source: old.reddit.com JSON endpoint returning 403. Max consecutive failures: 9,735. Reddit was 90% of all signals (5,179 of 5,736). UA rotation or PRAW migration needed.
+3. **Twitter inactive since June 6** (3 days). Last health row June 6, consec_fail=0 — worker likely just not running. Cookies appear valid when running.
+4. **Rating data quality issue.** `card_attributes` table stores both integer OVR ratings (78, 83, 91...) AND float attribute sub-scores (83.9, 84.5...) all under `key='rating'`. The audit query with `row_factory` silently returned 0 rows due to Python dict key collision when `ca.value` alias shadowed an existing key. 634 tradeable cards have clean integer OVR ≥70.
+5. **Price snapshot card coverage is narrow.** Only 57–102 distinct cards being snapped per day despite 1,134 tradeable. The tier scraper runs but produces limited results — most 85-91 and 78-81 range cards are EXTINCT or Evolution-only (noted in session 28 gotchas). The cards being snapped are dominated by Festival of Football / Time Warp promos (~1,021 snaps/card/day on the top-tier cards).
+6. **Phase 4 prerequisite not met.** Need ≥500 outcomes; have 0. Cannot start Phase 4 until recommender is running and accumulating outcomes.
+
+**Scraper health summary:**
+- `futgg`: HEALTHY — 8,044 successes, 88 max-consec-fail (historical), running clean today
+- `futgg_fodder`: HEALTHY — 5,344 successes, 0 failures ever
+- `futgg_tier`: HEALTHY — 8,348 successes, 0 failures ever
+- `ea_news`: HEALTHY — 2,831 successes, 1 max-consec-fail
+- `twitter`: INACTIVE — last run 2026-06-06, was healthy when running (0 consec-fail)
+- `reddit`: BROKEN — 9,735 consecutive failures, 403 blocked since ~2026-05-28
+
+**LLM cost:**
+- All 2,932 calls in Apr 26 – May 2 window ($1.25 total)
+- $0 spent since May 3. Daily cap ($0.03) and autonomous hard-stop ($0.02) both intact.
+- Most expensive day: 2026-04-29, 657 calls, $0.2863 (pre-cap-reduction)
+
+**Phase 4 readiness:** NOT ready. Blocked on recommender producing zero recommendations for 38 days. The signal-generation pipeline (reddit dead, twitter inactive) is also weak.
+
+**Next:** Investigate why recommender hasn't run since May 2. Read `backend/src/llm/recommender.py` and run `generate_recommendations('pc', ...)` manually to observe which guard fires. Fix the blocking condition, then fix Reddit 403 to restore signal volume.
+
+**Gotchas:**
+- `python -c` with `db.row_factory = sqlite3.Row` silently returns empty results for `GROUP BY` queries when an alias in the SELECT matches a Python built-in or dict key — use tuple access (no row_factory) for GROUP BY results.
+- Reddit's old.reddit.com endpoint broke around 2026-05-28. The signals table still has 5,179 reddit rows from before, which seed the signal_card_tags table (4,819 tagged rows). Once reddit is fixed those historical tags are still valid.
+- The `outcomes` table is empty because recommendations were reset (May 2 session 27) AND zero new recommendations have been generated. Outcome evaluator runs every 6h but has nothing to evaluate.
+
+**Changed files:**
+- `SESSION_LOG.md`
+
+---
+
 ### 2026-05-03 — session 28
 **Goal:** Card coverage expansion (rating-tier scraper), smart manual trigger guard, recommendation de-duplication, budget UI, circuit breaker, tradeable filtering.
 

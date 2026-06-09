@@ -112,6 +112,7 @@ Update status at the end of every session. Do not skip ahead — finish the curr
 - [x] Dedup via `reddit_post_ids`; scraper_health on every run; schema-guard on malformed JSON
 - [x] 10/10 reddit tests passing (incl. 2 httpx-mock tests for JSON parsing + signal insertion)
 - [x] Live fetch verified: old.reddit.com returns real posts with correct JSON shape
+- [x] **Session 29 Reddit 403 fix:** old.reddit.com blocked unauthenticated requests (9,735 consecutive failures). Rewritten with: credential check on startup (module-level `_creds_available` flag), graceful "disabled" path if `REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET` missing (single health row, no 9,735 failure streak), OAuth2 client-credentials flow when creds present, token cached with 1h expiry, `_fetch_subreddit_posts` uses `oauth.reddit.com` + Bearer token. Set `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` in `.env` to re-enable.
 
 ### 2.4 EA news and fixtures
 - [x] `backend/src/workers/ea_ingest.py` — RSS feed with HTML scrape fallback every 30 min via scheduler
@@ -148,7 +149,7 @@ Update status at the end of every session. Do not skip ahead — finish the curr
 ---
 
 ## Phase 3 — Autonomous recommendations
-**Status:** In progress (session 28). Card coverage, smart trigger, dedup, and budget UI shipped.
+**Status:** In progress (session 29). Scheduler fix, multi-model Ask, Reddit OAuth2 fix.
 
 - [x] `generate_recommendations(platform, db_path, max_recs)` — selects top 20 candidates (3+ snapshots/48h, ranked by signal count), calls Claude Haiku, filters confidence<60 + holds, inserts buys/avoids
 - [x] Fodder sweep (ratings 82-91) — within 10% of 7d low + promo in 14 days
@@ -162,8 +163,16 @@ Update status at the end of every session. Do not skip ahead — finish the curr
 - [x] **Session 28:** Smart manual trigger — `_has_worthy_candidates()` guard skips LLM calls when no fresh candidates; budget status IPC + UI bar showing daily spend/cap/remaining; Refresh button greyed with "Budget used" tooltip when exhausted
 - [x] **Session 28:** Recommendation de-duplication — getRecommendations shows only most-recent rec per player+version; `prior_count` badge for "(N previous)"; "Show all history" toggle
 - [x] **Session 28:** Toast notifications on generate (skipped/added/error); `wait_for_function` price-render wait in tier scraper (prices load async via XHR); 134 tests passing
-- [ ] Walk through UI with owner sign-off
-- [ ] Accumulate ≥500 outcomes to seed Phase 4 classifier
+- [x] **Session 29:** Scheduler CronTrigger miss fixed — `recommendations_pc` now fires ~30s after every restart via `next_run_time=now+30s` (previously missed if system started after 09:00 UTC). **NOTE:** 0 recs generated not due to code bug — Anthropic account has $0 credit balance. Top up at https://console.anthropic.com → Billing.
+- [x] **Session 29:** Multi-model Ask feature — NVIDIA NIM provider (5 free models: DeepSeek V4 Pro, Kimi K2.6, Qwen3 80B, Mistral Small, GPT OSS 120B); provider registry + base class in `backend/src/llm/providers/`; `db:askMultiModel` + `db:getProviderAvailability` IPC handlers; Ask view rewritten with provider checkboxes, parallel verdicts, disagreement banner. Add `NVIDIA_API_KEY=nvapi-...` to `.env` to enable NVIDIA models.
+- [x] **Session 29:** `.env.example` created with all required env vars documented. 146 tests passing.
+- [x] **Session 30:** Multi-model hardening — Haiku is no longer forced on; Ask supports zero-model inline guard, all NVIDIA text model IDs via one `NVIDIA_API_KEY`, and Mistral Vision image attachment analysis in Ask.
+- [x] **Session 30:** Recommendations model selector — persisted provider choice (Haiku or 5 NVIDIA text models), free NVIDIA budget display, and `provider_id` threaded through IPC/HTTP trigger to `generate_recommendations()`.
+- [x] **Session 30:** Signal context classifier — migration 0008 adds `signals.signal_context`; rule-based classifier tags `fut_market`, `irl_transfer`, `irl_result`, `promo_leak`; LLM prompts/context now distinguish IRL news from FUT market evidence; Signals view renders colored badges.
+- [x] **Session 30:** Discord image parsing — migration 0009 adds `signal_attachments.vision_extracted`; Discord worker processes max 1 image/message with Mistral Vision, appends extracted card info to signal text, then triggers card tagging.
+- [x] **Session 30:** Reddit hardening — explicit root `.env` OAuth load, one clean disabled health row when creds are absent, OAuth user-agent from `REDDIT_USERNAME`, and per-session missing/private subreddit skip after `/about.json` check.
+- [ ] Walk through UI with owner sign-off (Phase 3 + multi-model Ask)
+- [!] Accumulate ≥500 outcomes to seed Phase 4 classifier — blocked: Anthropic credits at $0, recommendations not generating
 
 ---
 

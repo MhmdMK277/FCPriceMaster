@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('fcdb', {
   getFodderHistory:  (opts) => ipcRenderer.invoke('db:getFodderHistory', opts),
   getLLMHistory:    (opts) => ipcRenderer.invoke('db:getLLMHistory', opts),
   askLLM:           (opts) => ipcRenderer.invoke('db:askLLM', opts),
+  askMultiModel:    (opts) => ipcRenderer.invoke('db:askMultiModel', opts),
+  getProviderAvailability: () => ipcRenderer.invoke('db:getProviderAvailability'),
   getRecommendations:            (opts) => ipcRenderer.invoke('db:getRecommendations', opts),
   dismissRecommendation:         (opts) => ipcRenderer.invoke('db:dismissRecommendation', opts),
   getRecommendationStats:        (opts) => ipcRenderer.invoke('db:getRecommendationStats', opts),

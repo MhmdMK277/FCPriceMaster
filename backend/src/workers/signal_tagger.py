@@ -8,6 +8,7 @@ Also seeds card_aliases from the cards table on first run.
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +39,67 @@ _COMMON_NICKNAMES: dict[str, str] = {
     "leao": "Leão",
     "raphinha": "Raphinha",
 }
+
+_TRANSFER_PATTERNS = [
+    re.compile(r"[€£$]\d+(?:\.\d+)?[MmBb]"),
+    re.compile(r"\d+\s*million", re.IGNORECASE),
+    re.compile(r"\d+m\s+deal", re.IGNORECASE),
+]
+_RESULT_PATTERNS = [
+    re.compile(r"\d+[-–]\d+"),
+    re.compile(r"\bFT:", re.IGNORECASE),
+    re.compile(r"\bAET:", re.IGNORECASE),
+    re.compile(r"\bpen:", re.IGNORECASE),
+]
+
+_TRANSFER_WORDS = (
+    "bid", "signs for", "joins", "deal done", "medical", "fee agreed",
+    "contract signed", "officially joins", "move to", "transfer window",
+    "release clause", "done deal", "here we go", "announcement",
+    "unveiled", "unveiled as",
+)
+_RESULT_WORDS = (
+    "hat-trick", "brace", "motm", "man of the match", "red card",
+    "yellow card", "suspended", "injured", "injury", "match report",
+    "full time", "half time", "assists in", "scores in", "clean sheet",
+)
+_PROMO_WORDS = (
+    "sbc", "objective", "objectives", "pack weight", "promo", "toty",
+    "tots", "totw", "fut birthday", "road to", "shapeshifters",
+    "future stars", "team of the week", "leaked", "confirmed in game",
+    "in-game", "icon", "hero", "evo", "evolution", "live sbc",
+    "live objective", "content drop",
+)
+_MARKET_WORDS = (
+    "bin", "buy now", "snipe", "invest", "coins", "price crash",
+    "price spike", "market crash", "tradeable", "flip", "hold", "listed",
+    "quick sell", "discard", "mass bid",
+)
+
+
+def _classify_signal_context(text: str) -> str:
+    """Classify raw signal text as FUT market, promo leak, or IRL football news."""
+    raw = text or ""
+    lower = raw.lower()
+
+    promo = any(word in lower for word in _PROMO_WORDS)
+    transfer = any(p.search(raw) for p in _TRANSFER_PATTERNS) or any(
+        word in lower for word in _TRANSFER_WORDS
+    )
+    result = any(p.search(raw) for p in _RESULT_PATTERNS) or any(
+        word in lower for word in _RESULT_WORDS
+    )
+    market = any(word in lower for word in _MARKET_WORDS)
+
+    if promo:
+        return "promo_leak"
+    if transfer:
+        return "irl_transfer"
+    if result:
+        return "irl_result"
+    if market:
+        return "fut_market"
+    return "fut_market"
 
 
 def seed_card_aliases(db_path: str) -> int:
@@ -148,6 +210,11 @@ def run_tagging(db_path: str, batch_size: int = _BATCH_SIZE) -> tuple[int, list[
         all_tagged_card_ids: set[int] = set()
 
         for signal_id, raw_text in signals:
+            signal_context = _classify_signal_context(raw_text)
+            con.execute(
+                "UPDATE signals SET signal_context=? WHERE id=?",
+                (signal_context, signal_id),
+            )
             text_lower = raw_text.lower()
             # Tokenize into words and bigrams
             words = text_lower.split()

@@ -471,6 +471,11 @@
 .sig-badge.fwd  { background: #1c2f1c; color: #4ade80; }
 .sig-badge.cat  { background: #1e2a3b; color: #7dd3fc; }
 .sig-badge.high { background: #2d1a1a; color: #f87171; }
+.sig-badge.context { letter-spacing: 0; }
+.sig-badge.ctx-fut { background: #1e293b; color: #94a3b8; }
+.sig-badge.ctx-transfer { background: #3b2413; color: #fb923c; }
+.sig-badge.ctx-result { background: #102a43; color: #60a5fa; }
+.sig-badge.ctx-promo { background: #12351f; color: #4ade80; }
 
 .signal-source-icon {
   font-size: 10px;
@@ -582,6 +587,41 @@
 .ask-textarea:focus { border-color: #38bdf8; }
 .ask-textarea::placeholder { color: #475569; }
 
+.ask-attach-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  max-width: 720px;
+}
+
+.attach-btn,
+.attach-clear {
+  padding: 5px 10px;
+  border-radius: 4px;
+  border: 1px solid #334155;
+  background: #0f172a;
+  color: #94a3b8;
+  font-size: 12px;
+  cursor: pointer;
+}
+.attach-btn:hover,
+.attach-clear:hover { border-color: #38bdf8; color: #38bdf8; }
+.ask-image-note { font-size: 12px; color: #7dd3fc; }
+
+.ask-image-preview {
+  margin: 0 0 10px;
+  max-width: 720px;
+}
+.ask-image-preview img {
+  display: block;
+  max-width: 180px;
+  max-height: 120px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid #334155;
+}
+
 .ask-controls {
   display: flex;
   align-items: center;
@@ -595,6 +635,35 @@
   gap: 6px;
 }
 .ask-label { font-size: 12px; color: #64748b; }
+
+.ask-provider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  max-width: 860px;
+  margin-bottom: 12px;
+}
+
+.provider-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+.provider-checkbox-disabled { cursor: not-allowed; opacity: 0.65; }
+.provider-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.provider-chip-anthropic { background: #2a1e3b; color: #c4b5fd; }
+.provider-chip-nvidia { background: #122d1b; color: #86efac; }
+.provider-chip-nokey { background: #1e293b; color: #64748b; }
 
 .ask-btn { min-width: 110px; }
 

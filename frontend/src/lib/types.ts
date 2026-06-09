@@ -80,6 +80,7 @@ export interface SignalRow {
   attachment_urls: string[];
   signal_category: string;
   priority: string;
+  signal_context: 'fut_market' | 'irl_transfer' | 'irl_result' | 'promo_leak';
 }
 
 export interface FodderSummaryRow {
@@ -138,6 +139,35 @@ export interface AskResult {
     model: string;
     input_tokens: number;
     output_tokens: number;
+  };
+  error?: string;
+}
+
+export interface ProviderAvailability {
+  haiku: boolean;
+  nvidia: boolean;
+}
+
+export interface MultiModelVerdict {
+  provider_id: string;
+  provider_name: string;
+  action: 'buy' | 'hold' | 'avoid';
+  confidence: number;
+  reasoning: string;
+  price_context: string;
+  risk: string;
+  horizon: string;
+  suggested_buy_price: number | null;
+  suggested_sell_price: number | null;
+  cost_usd: number;
+  error?: string;
+}
+
+export interface MultiModelResult {
+  verdicts: MultiModelVerdict[];
+  context_used: {
+    cards: string[];
+    signals_count: number;
   };
   error?: string;
 }

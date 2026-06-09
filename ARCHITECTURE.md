@@ -100,6 +100,23 @@ Updating for FC27: add new dated windows to the YAML. No code change.
 
 ---
 
+## Multi-model provider architecture (2026-06-09)
+
+**Decision:** LLM provider calls are split into two independent layers:
+
+1. **Autonomous recommender** (`recommender.py`): stays Anthropic Haiku-only. Budget guards (`_check_autonomous_budget`) limit spend to $0.02/day.
+2. **Ask feature** (`main.cjs` + `Ask.tsx`): supports parallel multi-model via `db:askMultiModel` IPC. Anthropic Haiku + any number of NVIDIA NIM models (OpenAI-compatible API).
+
+**Python providers module** (`backend/src/llm/providers/`): provides `BaseProvider`, `AnthropicProvider`, `NvidiaProvider`, and subclasses for each NVIDIA model. The `registry.py` `get_available_providers()` function uses env-key presence to determine availability. This module is intended for future use in the recommender and for testing; the current multi-model UI calls are handled entirely in Node.js (`main.cjs`) for simplicity.
+
+**NVIDIA NIM:** Free-tier API at `https://integrate.api.nvidia.com/v1`. OpenAI-compatible chat completions. Key prefix is `nvapi-`. Zero cost logged (free tier). No llm_calls table writes for NVIDIA calls.
+
+**Provider IDs:** `haiku`, `deepseek-v4-pro`, `kimi-k2-6`, `qwen3-80b`, `mistral-small`, `gpt-oss-120b`.
+
+**Disagreement detection:** `db:askMultiModel` returns all verdicts to the frontend; `Ask.tsx` shows a yellow banner when successful verdicts don't all agree.
+
+---
+
 ## Cross-FIFA transition
 When FC27 launches:
 - `card_attributes` schema unchanged (playstyles are tagged rows, not columns)
@@ -113,6 +130,13 @@ No rewrite. Config edit + schema-guard alerts handle the transition.
 ---
 
 ## Decisions log
+
+### 2026-06-09 — session 30 provider, vision, and signal-context decisions
+- NVIDIA text models share one `NvidiaTextProvider` implementation parameterized by `model_id`; the single `NVIDIA_API_KEY` gates all NVIDIA providers.
+- Mistral Small 4 119B is used for both text and vision. Vision is exposed as `mistral-vision`/`Mistral Vision` with image content sent only to that provider.
+- `signal_context` is deterministic and rule-based, not LLM-derived. It runs before card tagging so IRL football news can remain associated with cards while being weighted correctly by prompts.
+- Discord image parsing is best-effort enrichment after signal insert. Vision failures never block ingestion, and only one image per message is processed to control rate limits.
+- `node electron/main.cjs --selftest` delegates to Electron when run under plain Node because native `better-sqlite3` is built for Electron ABI.
 
 ### 2026-04-18 — initial architecture
 - Chose SQLite over Postgres for zero-admin local operation.

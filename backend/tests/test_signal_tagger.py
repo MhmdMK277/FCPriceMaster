@@ -9,7 +9,7 @@ import tempfile
 import pytest
 
 from src.db.migrate import run_migrations
-from src.workers.signal_tagger import seed_card_aliases, run_tagging
+from src.workers.signal_tagger import _classify_signal_context, seed_card_aliases, run_tagging
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +85,34 @@ def test_seed_card_aliases_idempotent(db_with_cards):
 # ---------------------------------------------------------------------------
 # Signal tagging
 # ---------------------------------------------------------------------------
+
+def test_classify_signal_context_priority_examples():
+    cases = [
+        ("Real Madrid bid €150M for Alvarez, deal done, medical tomorrow", "irl_transfer"),
+        ("FT: Arsenal 3-1 Chelsea, Salah MOTM", "irl_result"),
+        ("TOTS Mbappe SBC leaked, 90 rated, confirmed in game", "promo_leak"),
+        ("Neymar BIN dropping hard, snipe at 500K, good flip", "fut_market"),
+    ]
+    for text, expected in cases:
+        assert _classify_signal_context(text) == expected
+
+
+def test_run_tagging_sets_signal_context(db_with_cards):
+    con = sqlite3.connect(db_with_cards)
+    con.execute(
+        """INSERT INTO signals (source, source_id, ts_utc, raw_text, signal_type)
+           VALUES ('test', 'sig-context', '2026-01-01T00:00:00Z', 'FT: Arsenal 3-1 Chelsea, Haaland MOTM', 'direct')"""
+    )
+    con.commit()
+    con.close()
+
+    seed_card_aliases(db_with_cards)
+    run_tagging(db_with_cards)
+
+    con = sqlite3.connect(db_with_cards)
+    row = con.execute("SELECT signal_context FROM signals WHERE source_id='sig-context'").fetchone()
+    con.close()
+    assert row[0] == "irl_result"
 
 def test_run_tagging_tags_signal_with_card_mention(db_with_cards):
     """A signal mentioning 'Wirtz' should get tagged to Florian Wirtz's card."""

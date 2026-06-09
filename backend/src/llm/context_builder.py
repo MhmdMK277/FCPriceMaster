@@ -290,14 +290,16 @@ def _recent_signals(con: sqlite3.Connection, card_ids: list[int]) -> list[dict[s
     """Return last 10 signals mentioning any of the given card IDs."""
     if not card_ids:
         rows = con.execute(
-            """SELECT raw_text, source, source_server, ts_utc
+            """SELECT raw_text, source, source_server, ts_utc,
+                      COALESCE(signal_context, 'fut_market') AS signal_context
                FROM signals WHERE raw_text IS NOT NULL
                ORDER BY ts_utc DESC LIMIT 10"""
         ).fetchall()
     else:
         placeholders = ",".join("?" * len(card_ids))
         rows = con.execute(
-            f"""SELECT DISTINCT s.raw_text, s.source, s.source_server, s.ts_utc
+            f"""SELECT DISTINCT s.raw_text, s.source, s.source_server, s.ts_utc,
+                       COALESCE(s.signal_context, 'fut_market') AS signal_context
                 FROM signals s
                 JOIN signal_card_tags t ON t.signal_id = s.id
                 WHERE t.card_id IN ({placeholders}) AND s.raw_text IS NOT NULL
@@ -305,7 +307,7 @@ def _recent_signals(con: sqlite3.Connection, card_ids: list[int]) -> list[dict[s
             card_ids,
         ).fetchall()
     return [
-        {"text": r[0], "source": r[1], "server": r[2], "ts_utc": r[3]}
+        {"text": r[0], "source": r[1], "server": r[2], "ts_utc": r[3], "signal_context": r[4]}
         for r in rows
     ]
 

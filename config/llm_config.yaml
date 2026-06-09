@@ -4,3 +4,13 @@ max_tokens: 1000
 temperature: 0
 # Daily spend cap in USD — application-layer safety net (secondary to Anthropic account cap)
 daily_cap_usd: 0.03
+
+nvidia:
+  api_key_env: NVIDIA_API_KEY
+  base_url: https://integrate.api.nvidia.com/v1
+  enabled_models:
+    - deepseek-v4-pro
+    - kimi-k2-6
+    - qwen3-80b
+    - mistral-small
+    - gpt-oss-120b

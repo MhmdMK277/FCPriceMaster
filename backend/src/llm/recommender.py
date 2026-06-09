@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -54,6 +55,8 @@ FUTTIES rules (apply only when futties_active=True in the user message):
 - All other cards: heavy AVOID bias. Repeatable pack supply floods the market relentlessly.
 If futties_days_until < 30: warn about approaching FUTTIES for any long-horizon recommendations.
 
+Signals tagged irl_transfer or irl_result are real-world football news, not FUT market data. A real-world transfer fee (e.g. €150M to Real Madrid) does NOT indicate a FUT card price. A high-profile IRL move may create mild in-game demand — treat as weak positive sentiment only, never as price evidence. Signals tagged promo_leak are high priority.
+
 Respond in this exact JSON format:
 {
   "verdict": "buy" | "avoid" | "hold",
@@ -70,6 +73,8 @@ Respond ONLY with the JSON object. No preamble, no markdown fences."""
 _FODDER_SYSTEM_PROMPT = """You are FCPriceMaster. You are evaluating whether a specific fodder rating is a BUY opportunity right now based on current cheapest BIN prices, 7-day price history, and upcoming SBC/promo calendar.
 
 Fodder BUY criteria: price near 7-day low AND an SBC or promo expected within 14 days that will consume this rating.
+
+Signals tagged irl_transfer or irl_result are real-world football news, not FUT market data. A real-world transfer fee (e.g. €150M to Real Madrid) does NOT indicate a FUT card price. A high-profile IRL move may create mild in-game demand — treat as weak positive sentiment only, never as price evidence. Signals tagged promo_leak are high priority.
 
 Respond in this exact JSON format:
 {
@@ -377,7 +382,8 @@ def _format_card_message(card: dict[str, Any], context: dict[str, Any], momentum
         lines.append("Recent signals:")
         for s in signals[:5]:
             txt = (s.get("text") or "")[:100]
-            lines.append(f"  [{s.get('source', '?')}] {txt}")
+            signal_context = s.get("signal_context", "fut_market")
+            lines.append(f"  [{s.get('source', '?')} | {signal_context}] {txt}")
 
     return "\n".join(lines)
 
@@ -467,6 +473,33 @@ def _call_llm(
     return verdict, response.usage.input_tokens, response.usage.output_tokens
 
 
+def _provider_verdict_to_json(verdict: Any) -> dict[str, Any]:
+    target = verdict.target_price
+    return {
+        "verdict": verdict.action,
+        "confidence": verdict.confidence,
+        "reasoning": verdict.reasoning,
+        "price_context": "",
+        "risk": "medium",
+        "suggested_buy_price": target if verdict.action == "buy" else None,
+        "suggested_sell_price": target if verdict.action == "avoid" else None,
+        "horizon": "short (hours)" if verdict.horizon_hours <= 24 else "medium (days)",
+    }
+
+
+def _call_provider(provider_id: str, system: str, user_message: str) -> tuple[dict[str, Any], int, int, str]:
+    from src.llm.providers.registry import PROVIDER_REGISTRY
+
+    provider_cls = PROVIDER_REGISTRY.get(provider_id)
+    if provider_cls is None:
+        raise RuntimeError(f"Unknown provider_id: {provider_id}")
+    provider = provider_cls()
+    if not provider.is_available():
+        raise RuntimeError(f"Provider not available: {provider_id}")
+    verdict = asyncio.run(provider.ask(system, user_message))
+    return _provider_verdict_to_json(verdict), 0, 0, verdict.model_id
+
+
 def _insert_recommendation(
     con: sqlite3.Connection,
     card_id: int | None,
@@ -547,12 +580,18 @@ def _futties_85_recommendation(con: sqlite3.Connection, platform: str) -> dict[s
 # Card recommendations
 # ---------------------------------------------------------------------------
 
-def generate_recommendations(platform: str, db_path: str, max_recs: int = 3) -> list[dict[str, Any]]:
+def generate_recommendations(
+    platform: str,
+    db_path: str,
+    max_recs: int = 3,
+    provider_id: str = "haiku",
+) -> list[dict[str, Any]]:
     """
     Generate autonomous buy/avoid recommendations for the given platform.
     Returns list of inserted recommendation dicts.
     """
-    if _anthropic is None:
+    use_haiku = provider_id == "haiku"
+    if use_haiku and _anthropic is None:
         raise ImportError("anthropic package not installed")
 
     autonomous_spent = _check_autonomous_budget(db_path)
@@ -560,18 +599,18 @@ def generate_recommendations(platform: str, db_path: str, max_recs: int = 3) -> 
         logger.info("Daily autonomous budget exhausted ($%.4f >= $0.02) — skipping run.", autonomous_spent)
         return []
 
-    api_key = _load_api_key()
-    if not api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY not set")
-
     config = _load_config()
     model = config.get("model", "claude-haiku-4-5-20251001")
     max_tokens = int(config.get("max_tokens", 500))
     cap_usd = float(config.get("daily_cap_usd", 0.50))
 
-    _check_daily_cap(db_path, cap_usd)
-
-    client = _anthropic.Anthropic(api_key=api_key)
+    client = None
+    if use_haiku:
+        api_key = _load_api_key()
+        if not api_key:
+            raise RuntimeError("ANTHROPIC_API_KEY not set")
+        _check_daily_cap(db_path, cap_usd)
+        client = _anthropic.Anthropic(api_key=api_key)
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
 
@@ -604,14 +643,20 @@ def generate_recommendations(platform: str, db_path: str, max_recs: int = 3) -> 
             user_message = _format_card_message(card, context, momentum)
 
             try:
-                verdict, in_tok, out_tok = _call_llm(
-                    client, model, max_tokens, _AUTONOMOUS_SYSTEM_PROMPT, user_message
-                )
+                if use_haiku:
+                    verdict, in_tok, out_tok = _call_llm(
+                        client, model, max_tokens, _AUTONOMOUS_SYSTEM_PROMPT, user_message
+                    )
+                    call_model = model
+                else:
+                    verdict, in_tok, out_tok, call_model = _call_provider(
+                        provider_id, _AUTONOMOUS_SYSTEM_PROMPT, user_message
+                    )
             except Exception as exc:
                 logger.warning("LLM call failed for %s: %s", card["player_name"], exc)
                 continue
 
-            _log_call(db_path, model, in_tok, out_tok, user_message, json.dumps(verdict), feature="autonomous")
+            _log_call(db_path, call_model, in_tok, out_tok, user_message, json.dumps(verdict), feature="autonomous")
 
             if float(verdict.get("confidence", 0)) < 60:
                 logger.debug("Low confidence for %s (%s) — skip", card["player_name"], verdict.get("confidence"))
@@ -630,7 +675,9 @@ def generate_recommendations(platform: str, db_path: str, max_recs: int = 3) -> 
                 break
 
         # Run fodder sweep after cards
-        fodder_recs = _fodder_recommendations(con, platform, db_path, client, model, max_tokens, cap_usd)
+        fodder_recs = _fodder_recommendations(
+            con, platform, db_path, client, model, max_tokens, cap_usd, provider_id=provider_id
+        )
         results.extend(fodder_recs)
 
         # FUTTIES structural fodder rec for rating 85
@@ -659,6 +706,7 @@ def _fodder_recommendations(
     model: str,
     max_tokens: int,
     cap_usd: float,
+    provider_id: str = "haiku",
 ) -> list[dict[str, Any]]:
     """Scan ratings 82-91 for fodder buy opportunities."""
     calendar = _calendar_context()
@@ -667,12 +715,14 @@ def _fodder_recommendations(
         return []
 
     results: list[dict[str, Any]] = []
+    use_haiku = provider_id == "haiku"
 
     for rating in range(82, 92):
-        try:
-            _check_daily_cap(db_path, cap_usd)
-        except RuntimeError:
-            break
+        if use_haiku:
+            try:
+                _check_daily_cap(db_path, cap_usd)
+            except RuntimeError:
+                break
 
         snap = con.execute(
             """SELECT cheapest_bin, ts_utc FROM fodder_snapshots
@@ -724,12 +774,18 @@ def _fodder_recommendations(
         )
 
         try:
-            verdict, in_tok, out_tok = _call_llm(client, model, max_tokens, _FODDER_SYSTEM_PROMPT, user_message)
+            if use_haiku:
+                verdict, in_tok, out_tok = _call_llm(client, model, max_tokens, _FODDER_SYSTEM_PROMPT, user_message)
+                call_model = model
+            else:
+                verdict, in_tok, out_tok, call_model = _call_provider(
+                    provider_id, _FODDER_SYSTEM_PROMPT, user_message
+                )
         except Exception as exc:
             logger.warning("Fodder LLM failed for rating %d: %s", rating, exc)
             continue
 
-        _log_call(db_path, model, in_tok, out_tok, user_message, json.dumps(verdict), feature="autonomous")
+        _log_call(db_path, call_model, in_tok, out_tok, user_message, json.dumps(verdict), feature="autonomous")
 
         if float(verdict.get("confidence", 0)) < 60 or verdict.get("verdict") in ("hold", "avoid"):
             continue

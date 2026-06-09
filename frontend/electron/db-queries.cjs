@@ -82,7 +82,8 @@ const RECENT_SIGNALS_SQL = `
     s.ts_utc, s.original_author, s.original_ts_utc,
     s.raw_text, s.has_attachments,
     COALESCE(s.signal_category, '') AS signal_category,
-    COALESCE(s.priority, 'medium')  AS priority
+    COALESCE(s.priority, 'medium')  AS priority,
+    COALESCE(s.signal_context, 'fut_market') AS signal_context
   FROM signals s
   WHERE s.ts_utc >= datetime('now', ? || ' hours')
     AND (? IS NULL OR s.source = ? OR s.source_server = ?)

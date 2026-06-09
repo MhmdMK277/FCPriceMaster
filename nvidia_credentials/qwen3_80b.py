@@ -1,0 +1,1 @@
+MODEL_ID = "qwen/qwen3-next-80b-a3b-instruct"

@@ -33,6 +33,13 @@ const PRIORITY_COLORS: Record<string, string> = {
   low:    'sig-priority-low',
 };
 
+const CONTEXT_BADGES: Record<string, { label: string; cls: string }> = {
+  fut_market: { label: 'FUT Market', cls: 'ctx-fut' },
+  irl_transfer: { label: 'IRL Transfer', cls: 'ctx-transfer' },
+  irl_result: { label: 'IRL Result', cls: 'ctx-result' },
+  promo_leak: { label: 'Promo Leak', cls: 'ctx-promo' },
+};
+
 function relativeTime(isoUtc: string): string {
   const diffMs = Date.now() - new Date(isoUtc + (isoUtc.endsWith('Z') ? '' : 'Z')).getTime();
   const mins = Math.floor(diffMs / 60_000);
@@ -156,6 +163,11 @@ function SignalCard({
         )}
         <span className="signal-time" title={timeStr}>{relativeTime(timeStr)}</span>
         {row.has_attachments ? <span className="sig-badge">img</span> : null}
+        {row.signal_context && (
+          <span className={`sig-badge context ${CONTEXT_BADGES[row.signal_context]?.cls || 'ctx-fut'}`}>
+            {CONTEXT_BADGES[row.signal_context]?.label || row.signal_context}
+          </span>
+        )}
         {row.signal_type === 'forward' && <span className="sig-badge fwd">fwd</span>}
         {row.signal_category && (
           <span className="sig-badge cat">{row.signal_category}</span>

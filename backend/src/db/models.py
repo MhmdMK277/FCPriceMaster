@@ -47,6 +47,13 @@ class Signal(BaseModel):
     ts_utc: datetime
     signal_type: str
     raw_text: Optional[str] = None
+    source_server: Optional[str] = None
+    original_author: Optional[str] = None
+    original_ts_utc: Optional[datetime] = None
+    has_attachments: bool = False
+    signal_category: Optional[str] = None
+    priority: str = "medium"
+    signal_context: str = "fut_market"
 
 
 class SignalCardTag(BaseModel):

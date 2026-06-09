@@ -181,7 +181,7 @@ async def test_fetch_subreddit_posts_parses_json() -> None:
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
     with patch("src.workers.reddit_ingest.httpx.AsyncClient", return_value=mock_client):
-        posts = await _fetch_subreddit_posts("fut", "new", 25)
+        posts = await _fetch_subreddit_posts("fut", "new", 25, token=None)
 
     assert len(posts) == 2
     assert posts[0]["id"] == "xyz789"
@@ -203,7 +203,7 @@ async def test_fetch_subreddit_posts_inserts_signals(tmp_db: str) -> None:
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
     with patch("src.workers.reddit_ingest.httpx.AsyncClient", return_value=mock_client):
-        posts = await _fetch_subreddit_posts("fut", "new", 25)
+        posts = await _fetch_subreddit_posts("fut", "new", 25, token=None)
 
     conn = open_db(tmp_db)
     inserted = 0

@@ -336,6 +336,7 @@ def build_scheduler(
         args=["pc", db_path],
         id="recommendations_pc",
         name="Autonomous recommendations — PC",
+        next_run_time=now + timedelta(seconds=30),
         misfire_grace_time=3600,
         coalesce=True,
         max_instances=1,
@@ -427,7 +428,7 @@ def build_scheduler(
 async def _http_trigger_server(db_path: str) -> None:
     """Minimal asyncio HTTP server on port 8765 for UI-triggered recommendation runs."""
 
-    async def _run_recs_with_result(platform: str, db_path: str) -> dict:
+    async def _run_recs_with_result(platform: str, db_path: str, provider_id: str = "haiku") -> dict:
         """Run recommendations, returning {status, skipped, reason, recs_added}."""
         try:
             con = sqlite3.connect(db_path)
@@ -439,8 +440,8 @@ async def _http_trigger_server(db_path: str) -> None:
                 logger.info("Manual trigger skip (%s): %s", platform, reason)
                 return {"status": "ok", "skipped": True, "reason": reason, "recs_added": 0}
 
-            recs = await asyncio.to_thread(generate_recommendations, platform, db_path)
-            logger.info("Manual trigger done: %d recs for %s", len(recs), platform)
+            recs = await asyncio.to_thread(generate_recommendations, platform, db_path, 3, provider_id)
+            logger.info("Manual trigger done: %d recs for %s via %s", len(recs), platform, provider_id)
             return {"status": "ok", "skipped": False, "reason": "", "recs_added": len(recs)}
         except Exception as exc:
             logger.error("Manual trigger failed for %s: %s", platform, exc)
@@ -456,13 +457,15 @@ async def _http_trigger_server(db_path: str) -> None:
                 body_start = data.find(b"\r\n\r\n")
                 body = data[body_start + 4:].decode("utf-8", errors="replace") if body_start >= 0 else ""
                 platform = "pc"
+                provider_id = "haiku"
                 try:
                     payload = _json.loads(body)
                     platform = payload.get("platform", "pc")
+                    provider_id = payload.get("provider_id", "haiku")
                 except Exception:
                     pass
-                logger.info("HTTP trigger: run-recommendations for %s", platform)
-                result = await _run_recs_with_result(platform, db_path)
+                logger.info("HTTP trigger: run-recommendations for %s via %s", platform, provider_id)
+                result = await _run_recs_with_result(platform, db_path, provider_id)
                 resp_body = _json.dumps(result).encode("utf-8")
                 header = (
                     f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"

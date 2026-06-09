@@ -66,6 +66,8 @@ FUTTIES rules (apply only when futties_active=True in the user message):
 - All other cards: heavy AVOID bias. Repeatable packs flood supply; price recovery before game end is unlikely.
 If futties_days_until < 30: warn about approaching FUTTIES for any long-horizon hold recommendations.
 
+Signals tagged irl_transfer or irl_result are real-world football news, not FUT market data. A real-world transfer fee (e.g. €150M to Real Madrid) does NOT indicate a FUT card price. A high-profile IRL move may create mild in-game demand — treat as weak positive sentiment only, never as price evidence. Signals tagged promo_leak are high priority.
+
 Always respond in this exact JSON format:
 {
   "verdict": "buy" | "hold" | "avoid",
@@ -213,7 +215,8 @@ def _format_user_message(context: dict[str, Any], trade_call: str) -> str:
         lines.append("Recent signals:")
         for s in signals[:5]:
             text = (s.get("text") or "")[:120]
-            lines.append(f"  [{s.get('source', '?')}] {text}")
+            context = s.get("signal_context", "fut_market")
+            lines.append(f"  [{s.get('source', '?')} | {context}] {text}")
         lines.append("")
 
     return "\n".join(lines)
