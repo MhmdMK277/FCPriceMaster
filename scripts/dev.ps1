@@ -78,7 +78,9 @@ if ($enableTwitter) {
 }
 
 try {
-    # Launch Electron + Vite dev server (blocks until Electron window closes)
+    # Launch Electron + Vite dev server (blocks until Electron window closes).
+    # dev.ps1 already spawned the workers above — tell Electron NOT to spawn its own.
+    $env:AUTO_START_BACKEND = "false"
     Push-Location "$root\frontend"
     & $pnpmCmd dev:electron
     Pop-Location

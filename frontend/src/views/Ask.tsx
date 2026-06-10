@@ -81,7 +81,7 @@ function MultiVerdictCard({ v }: { v: MultiModelVerdict }) {
   );
 }
 
-function PendingCard({ name, isNvidia }: { name: string; isNvidia: boolean }) {
+function PendingCard({ name, isNvidia, hint }: { name: string; isNvidia: boolean; hint?: string }) {
   const borderColor = isNvidia ? '#22c55e' : '#8b5cf6';
   return (
     <div className="multi-verdict-card" style={{ borderLeft: `3px solid ${borderColor}`, opacity: 0.55 }}>
@@ -91,6 +91,9 @@ function PendingCard({ name, isNvidia }: { name: string; isNvidia: boolean }) {
         <span className="ask-spinner" style={{ marginLeft: 8 }} />
       </div>
       <p style={{ color: '#64748b', fontSize: 13, margin: 0 }}>Querying…</p>
+      {hint && (
+        <p style={{ color: '#64748b', fontSize: 11, fontStyle: 'italic', margin: '4px 0 0' }}>{hint}</p>
+      )}
     </div>
   );
 }
@@ -199,9 +202,21 @@ export function Ask({ platform, setPlatform }: { platform: Platform; setPlatform
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [imageFileName, setImageFileName] = useState<string | null>(null);
   const [imageNote, setImageNote] = useState<string | null>(null);
+  const [coldStartHints, setColdStartHints] = useState<Record<string, string>>({});
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+
+  // Cold-start hints pushed from main while a provider fetch is still pending
+  useEffect(() => {
+    if (!isElectron || typeof window.fcdb.onProviderStatus !== 'function') return;
+    const unsubscribe = window.fcdb.onProviderStatus((data) => {
+      if (data.status === 'cold_starting' && data.session_id === sessionIdRef.current) {
+        setColdStartHints(prev => ({ ...prev, [data.provider_id]: data.message }));
+      }
+    });
+    return unsubscribe;
+  }, [isElectron]);
 
   const loadHistory = useCallback(async () => {
     if (!isElectron) return;
@@ -305,6 +320,7 @@ export function Ask({ platform, setPlatform }: { platform: Platform; setPlatform
     setLoading(true);
     setError(null);
     setContextInfo(null);
+    setColdStartHints({});
 
     const pending: Record<string, VerdictState> = {};
     providers.forEach(p => { pending[p] = 'pending'; });
@@ -515,7 +531,7 @@ export function Ask({ platform, setPlatform }: { platform: Platform; setPlatform
           <div className="multi-verdict-grid">
             {ALL_DISPLAY_PROVIDERS.filter(p => p.id in verdictsByProvider).map(p => {
               const state = verdictsByProvider[p.id];
-              if (state === 'pending')   return <PendingCard   key={p.id} name={p.name} isNvidia={p.isNvidia} />;
+              if (state === 'pending')   return <PendingCard   key={p.id} name={p.name} isNvidia={p.isNvidia} hint={coldStartHints[p.id]} />;
               if (state === 'cancelled') return <CancelledCard key={p.id} name={p.name} isNvidia={p.isNvidia} />;
               return <MultiVerdictCard key={p.id} v={state} />;
             })}

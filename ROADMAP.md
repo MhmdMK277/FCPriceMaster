@@ -181,6 +181,10 @@ Update status at the end of every session. Do not skip ahead — finish the curr
 - [x] **Session 31:** Migration 0010 adds `model_id` column to recommendations; `_insert_recommendation` stores the generating model; recommendation cards show colored AI source badge.
 - [x] **Session 31:** Recommendations budget bar shows model name + "Free (NVIDIA · 40 RPM)" for NVIDIA providers.
 - [x] **Session 32:** Real cancel via AbortController — `callNvidiaModel`/`callAnthropic` now accept `signal` parameter; `db:callSingleProvider` creates a per-call AbortController stored in `activeSessions` Map keyed by `${session_id}_${provider_id}`; `db:cancelSession` IPC handler aborts all in-flight fetches for a session; AbortError returns `{error:'cancelled'}` verdict; Ask.tsx generates a UUID per analyse click, passes it to every provider call, and fires `cancelSession` on Cancel; cancelled-but-resolved verdicts render as grey CancelledCard.
+- [x] **Session 34:** Double-spawn fix — dev.ps1 owns worker spawning in dev (sets `AUTO_START_BACKEND=false` for Electron); Electron spawns only when the var is unset (production). 36 orphaned workers killed; scheduler now exits loudly (`os._exit(1)` + scraper_health row) when port 8765 is taken instead of silently serving stale code.
+- [x] **Session 34:** NVIDIA provider timeouts — `callNvidiaModel` gets a 120s `AbortSignal.timeout` combined with the user-cancel signal via `AbortSignal.any`; TimeoutError returns a friendly error verdict; Python `nvidia_provider.py` httpx timeout raised 60s→120s (DeepSeek cold-start measured at 67s).
+- [x] **Session 34:** Cold-start UX — after 15s pending, main emits `provider-status` IPC event; preload exposes `onProviderStatus`; Ask.tsx shows "Cold-starting (large model)…" hint under Querying… on the pending card.
+- [x] **Session 34:** GPT OSS 120B reasoning-budget fix — `max_tokens` 1500 for gpt-oss (Node + Python); empty `content` now throws a clear "reasoning budget exhausted" error instead of crashing JSON.parse.
 - [!] Accumulate ≥500 outcomes to seed Phase 4 classifier — blocked: Anthropic credits at $0, recommendations not generating
 
 ---

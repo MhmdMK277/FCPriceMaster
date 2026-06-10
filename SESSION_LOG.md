@@ -21,7 +21,60 @@ Required fields per entry: date, session number, goal, done, next, gotchas, chan
 
 <!-- Entries go below this line, newest first -->
 
-### 2026-06-10 — session 32
+### 2026-06-10 — session 34
+**Goal:** Kill orphan workers, fix double-spawn (Session 33 root causes), add NVIDIA timeouts + cold-start UX, handle gpt-oss empty responses.
+
+**Done:**
+- Killed all orphaned processes (100+ python/node/electron from 7 launch generations); confirmed port 8765 free afterward.
+- **FIX 1 (double-spawn):** main.cjs `app.whenReady` only spawns workers when `AUTO_START_BACKEND !== 'false'`; dev.ps1 sets `AUTO_START_BACKEND=false` before `pnpm dev:electron`. Verified live: after dev.ps1 launch, Electron logged `AUTO_START_BACKEND=false — dev.ps1 owns worker spawning`, exactly 3 logical workers running (6 python PIDs — uv's exec chain doubles each worker's PID count; this also retro-explains Session 33's "2× per generation" counts), exactly ONE owner of port 8765.
+- **FIX 1C:** scheduler.py exits via `os._exit(1)` on port-8765 bind failure, after FATAL log + `scraper_health` failure row (source=scheduler). `sys.exit` would only kill the asyncio task.
+- **FIX 2A (timeout):** `callNvidiaModel` combines `AbortSignal.timeout(120000)` with the user-cancel signal via `AbortSignal.any` (Node 24.14.0 confirmed). `TimeoutError` → friendly "Model timed out after 120s" error verdict in both `callSingleProvider` and legacy `askMultiModel`.
+- **FIX 2B/2C (cold-start UX):** `db:callSingleProvider` NVIDIA branch arms a 15s timer that sends a `provider-status` IPC event (`_e.sender.send`); cleared in finally. preload.cjs exposes `onProviderStatus` (returns unsubscribe fn); electron.d.ts typed; Ask.tsx subscribes (session-gated via `sessionIdRef`), stores hints in `coldStartHints` state, PendingCard renders the italic grey hint under "Querying…". Hints cleared on each new Analyse.
+- **FIX 2D:** nvidia_provider.py httpx timeout 60→120s (both text + vision call sites).
+- **FIX 3:** `callNvidiaModel` throws a clear error on empty `content` (reasoning budget exhausted); `max_tokens` 1500 for gpt-oss models, 500 otherwise — applied in main.cjs AND nvidia_provider.py (Python side added after watching the live gpt-oss recommender run fail with `non-JSON: {` truncation).
+- Verification: `pnpm build` clean; selftest exits 0; **149/149 pytest** (run twice); trigger fired with Node fetch (the same client Electron uses) logged `HTTP trigger: run-recommendations for pc via deepseek-v4-pro` — provider routing through the rebuilt (non-orphan) scheduler confirmed.
+- A gpt-oss-120b generation (triggered from the app UI while testing) added 3 recommendations with `model_id='openai/gpt-oss-120b'` in the DB — end-to-end NVIDIA rec generation works.
+
+**Next:** Owner visual pass: (1) Ask with DeepSeek only → cold-start hint should appear after 15s, verdict or clean timeout by 120s; (2) Ask with Kimi only → verdict in ~2-6s; (3) Recommendations → DeepSeek → Generate now → green model badge. Also consider: skip/deprioritize DeepSeek V4 Pro in the recommender — under the long recommender prompt it exceeded even 120s repeatedly tonight.
+
+**Gotchas:**
+- `curl.exe`/`Invoke-WebRequest` are unreliable clients for the minimal trigger server (single `read(2048)`, no `Expect: 100-continue` handling) — body can be missed → provider falls back to haiku. Electron's fetch (undici) sends headers+body together and works. Test with Node fetch, not curl.
+- Kimi K2.6 on NVIDIA NIM is flaky at temperature=0 with short prompts: 2 of 4 test calls degenerated (`finish_reason=repetition`, "the the the…") — app surfaces these as error cards; a retry usually succeeds.
+- httpx `ReadTimeout` stringifies to '' → recommender logs "LLM call failed for X: " with empty reason. Cosmetic, not fixed this session.
+- The scheduler running tonight was started before the Python gpt-oss max_tokens fix — that fix takes effect next launch.
+
+**Changed files:**
+- `frontend/electron/main.cjs` (AUTO_START_BACKEND gate, NVIDIA timeout + AbortSignal.any, cold-start provider-status event, empty-content error, gpt-oss max_tokens, TimeoutError handling ×2)
+- `frontend/electron/preload.cjs` (onProviderStatus)
+- `frontend/src/electron.d.ts` (onProviderStatus type)
+- `frontend/src/views/Ask.tsx` (coldStartHints state + subscription, PendingCard hint rendering)
+- `scripts/dev.ps1` (sets AUTO_START_BACKEND=false for Electron)
+- `backend/src/workers/scheduler.py` (fatal exit + scraper_health row on port 8765 bind failure)
+- `backend/src/llm/providers/nvidia_provider.py` (timeout 120s ×2, gpt-oss max_tokens 1500)
+- `ROADMAP.md`, `ARCHITECTURE.md`, `SESSION_LOG.md` (this entry)
+
+### 2026-06-10 — session 33
+**Goal:** Read-only diagnostic audit of the Ask flow ("Querying…" hang on DeepSeek) and Recommendations Generate-now flow. No code changes.
+
+**Done:**
+- IPC bridge audit: preload.cjs exposes 27 functions; main.cjs registers 22 `db:` handlers + 5 settings/backend handlers. Perfect 1:1 match — no missing entries, no dead stubs.
+- Ask flow traced: `buildAskContext` → N× parallel `callSingleProvider` → `logAskMulti`. The Ask flow never touches Python — Anthropic and NVIDIA calls are raw `fetch()` from the Electron main process (main.cjs `callAnthropic` line 340, `callNvidiaModel` line 303).
+- Live NVIDIA API test (exact main.cjs fetch replicated in Node): `kimi-k2.6` answered in 437 ms, `gpt-oss-120b` in 259 ms, but **`deepseek-v4-pro` took 67 s** to return HTTP 200; `qwen3-80b` and `mistral-small-4` did not answer within 30 s. The model IDs are all valid — slow ones are NVIDIA free-tier cold-start/queue latency.
+- **ROOT CAUSE 1 (Ask hang):** `callNvidiaModel` has no fetch timeout, so slow NVIDIA models leave the card on "Querying…" for 1–2+ minutes. Not an IPC bug.
+- **ROOT CAUSE 2 (Recommendations):** port 8765 is owned by an ORPHAN scheduler (PID 46920, started **2026-05-28**) running 13-day-old code that ignores `provider_id`. Verified live: POST with `provider_id: deepseek-v4-pro` logged as old-format `run-recommendations for pc` (no `via …`). All newer schedulers log `[Errno 10048]` bind failure and keep running without a trigger server.
+- **ROOT CAUSE 3 (orphan factory):** every `dev.ps1` launch double-spawns all 3 Python workers — dev.ps1 lines 52–78 AND main.cjs `app.whenReady` (`startBackend`/`startDiscordIngest`/`startTwitterIngest`). Found 14 scheduler, 14 discord, 8 twitter python.exe processes from 7 launch generations (oldest 5/28). Explains every duplicated line in scheduler.log and discord_ingest.log.
+- Python backend checks: NVIDIA_API_KEY present (.env, `nvapi-` prefix, len 70), ANTHROPIC_API_KEY present (len 108); all 7 providers registered AND available; httpx timeout in nvidia_provider.py is 60 s — shorter than DeepSeek's observed 67 s cold-start, so the Python rec path would also time out on deepseek.
+- Could not click the Electron UI / read DevTools console from this shell; substituted exact-code-path network tests. Manually fired POST /run-recommendations (deepseek-v4-pro): HTTP 200, `recs_added: 0` (handled by the stale orphan).
+
+**Next:** Remediation session: (1) kill all orphaned python.exe workers; (2) make ONE owner spawn the workers (either dev.ps1 or Electron, not both); (3) add a timeout (~120 s) + cold-start messaging to `callNvidiaModel`, and raise the httpx timeout in nvidia_provider.py; (4) consider making scheduler exit or alert loudly when port 8765 bind fails.
+
+**Gotchas:**
+- The trigger server has no `/health` endpoint — only `POST /run-recommendations`; a 404 from /health means it IS reachable.
+- `gpt-oss-120b` is a reasoning model: with small max_tokens it returns empty `content` (reasoning consumed the budget) → `JSON.parse('')` would throw in `parseVerdictText`. Watch with max_tokens=500.
+- Session-32 verification ("all plumbing present and correct") was right about the code, but live behavior differs because the process serving 8765 predates that code.
+
+**Changed files:**
+- `SESSION_LOG.md` (this entry — audit only, no code changed)
 **Goal:** Fix broken IPC bridge (BUG 1), implement real HTTP-level cancel via AbortController (BUG 2), verify Recommendations Generate now (BUG 3).
 
 **Done:**

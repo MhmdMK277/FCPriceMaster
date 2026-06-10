@@ -19,6 +19,13 @@ contextBridge.exposeInMainWorld('fcdb', {
   callSingleProvider:(opts) => ipcRenderer.invoke('db:callSingleProvider', opts),
   logAskMulti:       (opts) => ipcRenderer.invoke('db:logAskMulti', opts),
   cancelSession:     (opts) => ipcRenderer.invoke('db:cancelSession', opts),
+  // Push channel: main emits cold-start hints while a provider fetch is pending.
+  // Returns an unsubscribe function so the renderer can clean up on unmount.
+  onProviderStatus: (callback) => {
+    const listener = (_e, data) => callback(data);
+    ipcRenderer.on('provider-status', listener);
+    return () => ipcRenderer.removeListener('provider-status', listener);
+  },
   getRecommendations:            (opts) => ipcRenderer.invoke('db:getRecommendations', opts),
   dismissRecommendation:         (opts) => ipcRenderer.invoke('db:dismissRecommendation', opts),
   getRecommendationStats:        (opts) => ipcRenderer.invoke('db:getRecommendationStats', opts),

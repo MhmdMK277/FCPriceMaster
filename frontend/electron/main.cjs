@@ -300,6 +300,10 @@ function parseVerdictText(raw, providerId, providerName) {
   };
 }
 
+// NVIDIA free-tier models can cold-start for 60-120s (DeepSeek measured at 67s in
+// Session 33); without a timeout the Ask card sits on "Querying…" indefinitely.
+const NVIDIA_TIMEOUT_MS = 120000;
+
 async function callNvidiaModel(apiKey, modelId, userMessage, imageB64 = null, signal = null) {
   const messages = imageB64
     ? [{
@@ -313,13 +317,18 @@ async function callNvidiaModel(apiKey, modelId, userMessage, imageB64 = null, si
         { role: 'system', content: LLM_SYSTEM_PROMPT },
         { role: 'user', content: userMessage },
       ];
+  // gpt-oss is a reasoning model: it spends tokens on hidden reasoning before the
+  // answer, so 500 can leave content empty. Give it room for both.
+  const maxTokens = modelId.includes('gpt-oss') ? 1500 : 500;
   const body = JSON.stringify({
     model: modelId,
     messages,
-    max_tokens: 500,
+    max_tokens: maxTokens,
     temperature: 0,
   });
-  const fetchOpts = {
+  const signals = [AbortSignal.timeout(NVIDIA_TIMEOUT_MS)];
+  if (signal) signals.push(signal);
+  const response = await fetch(`${NVIDIA_BASE_URL}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -327,14 +336,18 @@ async function callNvidiaModel(apiKey, modelId, userMessage, imageB64 = null, si
       'Accept': 'application/json',
     },
     body,
-  };
-  if (signal) fetchOpts.signal = signal;
-  const response = await fetch(`${NVIDIA_BASE_URL}/chat/completions`, fetchOpts);
+    signal: AbortSignal.any(signals),
+  });
   if (!response.ok) {
     const errText = await response.text();
     throw new Error(`NVIDIA API ${response.status}: ${errText.slice(0, 200)}`);
   }
-  return response.json();
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content ?? '';
+  if (!content.trim()) {
+    throw new Error('Model returned empty response (reasoning budget exhausted). Try a different model.');
+  }
+  return data;
 }
 
 async function callAnthropic(apiKey, userMessage, signal = null) {
@@ -442,6 +455,18 @@ ipcMain.handle('db:callSingleProvider', async (_e, { provider_id, user_message, 
   if (!modelInfo) { cleanup(); return { provider_id, provider_name: provider_id, error: `Unknown provider: ${provider_id}`, cost_usd: 0, elapsed_ms: 0 }; }
   const nvidiaKey = getNvidiaKey();
   if (!nvidiaKey) { cleanup(); return { provider_id, provider_name: modelInfo.displayName, error: 'NVIDIA_API_KEY not set', cost_usd: 0, elapsed_ms: 0 }; }
+  // After 15s with no response the model is almost certainly cold-starting — tell
+  // the renderer so the card can say so instead of looking frozen.
+  const coldStartTimer = setTimeout(() => {
+    try {
+      _e.sender.send('provider-status', {
+        session_id,
+        provider_id,
+        status: 'cold_starting',
+        message: 'Cold-starting (large model)… this can take 60–120s',
+      });
+    } catch {}
+  }, 15000);
   try {
     const apiResponse = await callNvidiaModel(
       nvidiaKey,
@@ -455,11 +480,15 @@ ipcMain.handle('db:callSingleProvider', async (_e, { provider_id, user_message, 
     result.elapsed_ms = Date.now() - start;
     return result;
   } catch (e) {
+    if (e.name === 'TimeoutError') {
+      return { provider_id, provider_name: modelInfo.displayName, error: 'Model timed out after 120s — try again or use a faster model', action: 'hold', confidence: 0, reasoning: '', cost_usd: 0, elapsed_ms: Date.now() - start };
+    }
     if (e.name === 'AbortError') {
       return { provider_id, provider_name: modelInfo.displayName, error: 'cancelled', action: 'hold', confidence: 0, reasoning: 'Request cancelled', cost_usd: 0, elapsed_ms: Date.now() - start };
     }
     return { provider_id, provider_name: modelInfo.displayName, error: e.message, cost_usd: 0, elapsed_ms: Date.now() - start };
   } finally {
+    clearTimeout(coldStartTimer);
     cleanup();
   }
 });
@@ -542,6 +571,9 @@ ipcMain.handle('db:askMultiModel', async (_e, { trade_call, provider_ids, platfo
       const raw = apiResponse.choices?.[0]?.message?.content || '';
       return parseVerdictText(raw, providerId, modelInfo.displayName);
     } catch (e) {
+      if (e.name === 'TimeoutError') {
+        return { provider_id: providerId, provider_name: modelInfo.displayName, error: 'Model timed out after 120s — try again or use a faster model', cost_usd: 0 };
+      }
       return { provider_id: providerId, provider_name: modelInfo.displayName, error: e.message, cost_usd: 0 };
     }
   });
@@ -878,9 +910,16 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  startBackend();
-  startDiscordIngest();
-  startTwitterIngest();
+  // Worker spawn ownership: dev.ps1 spawns the Python workers itself and sets
+  // AUTO_START_BACKEND=false so we don't double-spawn (Session 33 found 36 orphans).
+  // Production launch (no dev.ps1) leaves the var unset → Electron owns spawning.
+  if (process.env.AUTO_START_BACKEND !== 'false') {
+    startBackend();
+    startDiscordIngest();
+    startTwitterIngest();
+  } else {
+    console.log('[main] AUTO_START_BACKEND=false — dev.ps1 owns worker spawning');
+  }
   createWindow();
 });
 

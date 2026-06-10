@@ -486,6 +486,31 @@ async def _http_trigger_server(db_path: str) -> None:
         logger.info("HTTP trigger server listening on 127.0.0.1:8765")
         async with server:
             await server.serve_forever()
+    except OSError as exc:
+        # Port 8765 is a hard singleton: a second scheduler must die loudly, not
+        # silently serve stale code without a trigger server (Session 33 root cause 2).
+        logger.error(
+            "FATAL: port 8765 already in use — another scheduler is running. "
+            "Kill all python.exe processes and restart. Exiting. (%s)", exc
+        )
+        try:
+            con = sqlite3.connect(db_path)
+            con.execute(
+                "INSERT INTO scraper_health (source, run_at_utc, success, last_error) "
+                "VALUES (?, ?, 0, ?)",
+                (
+                    "scheduler",
+                    datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "Port 8765 already in use — stale orphan detected",
+                ),
+            )
+            con.commit()
+            con.close()
+        except Exception as db_exc:
+            logger.error("Could not write scraper_health row: %s", db_exc)
+        logging.shutdown()
+        # os._exit: we are inside an asyncio task; sys.exit would only kill the task.
+        __import__("os")._exit(1)
     except Exception as exc:
         logger.error("HTTP trigger server failed to start: %s", exc)
 

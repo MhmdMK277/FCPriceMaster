@@ -51,7 +51,11 @@ class NvidiaTextProvider(NvidiaProvider):
         if not key:
             raise RuntimeError("NVIDIA_API_KEY not set")
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        # gpt-oss is a reasoning model: 500 tokens get eaten by hidden reasoning and
+        # the JSON answer arrives truncated ("non-JSON: {" failures in recommender).
+        max_tokens = 1500 if "gpt-oss" in self.model_id else 500
+        # 120s: DeepSeek V4 Pro cold-start measured at 67s (Session 33) — 60s timed out
+        async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(
                 f"{_NVIDIA_BASE_URL}/chat/completions",
                 headers={
@@ -65,7 +69,7 @@ class NvidiaTextProvider(NvidiaProvider):
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_message},
                     ],
-                    "max_tokens": 500,
+                    "max_tokens": max_tokens,
                     "temperature": 0,
                 },
             )
@@ -148,7 +152,8 @@ class NvidiaVisionProvider(NvidiaProvider):
                 {"role": "user", "content": user_message},
             ]
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        # 120s: DeepSeek V4 Pro cold-start measured at 67s (Session 33) — 60s timed out
+        async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(
                 f"{_NVIDIA_BASE_URL}/chat/completions",
                 headers={

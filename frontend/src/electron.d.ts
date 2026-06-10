@@ -25,6 +25,7 @@ declare global {
       callSingleProvider(opts: { provider_id: string; user_message: string; image_b64?: string | null; input_text?: string; session_id?: string }): Promise<import('./lib/types').MultiModelVerdict>;
       logAskMulti(opts: { input_text: string; verdicts: import('./lib/types').MultiModelVerdict[] }): Promise<{ ok: boolean }>;
       cancelSession(opts: { session_id: string }): Promise<{ cancelled: boolean }>;
+      onProviderStatus(callback: (data: { session_id: string; provider_id: string; status: string; message: string }) => void): () => void;
       getRecommendations(opts?: { platform?: Platform; limit?: number; activeOnly?: boolean; showAll?: boolean }): Promise<unknown[]>;
       dismissRecommendation(opts: { id: number }): Promise<void>;
       getRecommendationStats(opts?: { days?: number }): Promise<unknown>;

@@ -354,3 +354,17 @@ Observed during TOTS season: ratings 81-90 returned the same cheapest card set b
 
 **Club badge and nation flag URLs not available on cheapest list page.**
 `img[src*='club']` and `img[src*='nation']` selectors returned 0 matches. FUT.GG's cheapest list page does not embed club/nation images in the card anchor elements (they appear to be part of a SVG card art layer). Frontend uses `ImageWithFallback` component that shows a letter-initial placeholder on empty/failed URLs.
+
+## 2026-06-10 — session 34 Decisions
+
+**Worker spawn ownership: dev.ps1 owns spawning in dev mode, Electron owns it in production.**
+Session 33 found 7 launch generations of orphaned workers because both `scripts/dev.ps1` and `frontend/electron/main.cjs` spawned the scheduler, Discord, and Twitter workers on every launch. The contract is now: dev.ps1 spawns the three workers itself and sets `AUTO_START_BACKEND=false` in the environment before launching Electron; main.cjs only calls `startBackend()/startDiscordIngest()/startTwitterIngest()` when `AUTO_START_BACKEND !== 'false'`. Production single-click launch (no dev.ps1, var unset) keeps Electron as the spawner. The Settings-panel restart button still works in both modes because `restart-backend` is user-initiated.
+
+**Port 8765 is a hard singleton.**
+The scheduler HTTP trigger server now treats a bind failure on 127.0.0.1:8765 as fatal: it logs `FATAL: port 8765 already in use`, writes a `scraper_health` failure row (source=`scheduler`), and `os._exit(1)`s (a plain `sys.exit` inside an asyncio task would only kill the task). Rationale: in Session 33 a 13-day-old orphan held the port and silently served stale pre-provider code while every newer scheduler logged the bind error and carried on without a trigger server.
+
+**NVIDIA NIM free-tier latency budget is 120s, not 60s.**
+DeepSeek V4 Pro cold-start measured at 67s (HTTP 200 eventually). Node side: `callNvidiaModel` combines a 120s `AbortSignal.timeout` with the user-cancel signal via `AbortSignal.any` (Node 24); `TimeoutError` maps to a friendly error verdict. Python side: httpx timeout 120s. A `provider-status` IPC push channel (main → renderer, the first non-invoke channel in the app) surfaces a cold-start hint after 15s pending.
+
+**gpt-oss-120b needs max_tokens=1500.**
+It is a reasoning model; with 500 tokens the hidden reasoning eats the budget and `content` comes back empty or truncated (observed live: recommender `non-JSON: {` failures). Both callers now send 1500 for gpt-oss and treat empty content as an explicit error instead of letting `JSON.parse('')` throw.
