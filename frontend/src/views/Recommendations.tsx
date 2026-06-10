@@ -14,6 +14,25 @@ interface Recommendation {
   outcome_verdict: string | null;
   dismissed_at: string | null;
   prior_count: number;
+  model_id?: string;
+}
+
+const MODEL_DISPLAY: Record<string, { label: string; isNvidia: boolean }> = {
+  'claude-haiku-4-5-20251001':              { label: 'Claude Haiku',    isNvidia: false },
+  'deepseek-ai/deepseek-v4-pro':            { label: 'DeepSeek V4 Pro', isNvidia: true },
+  'moonshotai/kimi-k2.6':                   { label: 'Kimi K2.6',       isNvidia: true },
+  'qwen/qwen3-next-80b-a3b-instruct':       { label: 'Qwen3 80B',        isNvidia: true },
+  'mistralai/mistral-small-4-119b-2603':    { label: 'Mistral Small',    isNvidia: true },
+  'openai/gpt-oss-120b':                    { label: 'GPT OSS 120B',    isNvidia: true },
+  'structural':                             { label: 'Structural',       isNvidia: false },
+};
+
+function getModelDisplay(modelId: string): { label: string; isNvidia: boolean } {
+  if (MODEL_DISPLAY[modelId]) return MODEL_DISPLAY[modelId];
+  const lower = modelId.toLowerCase();
+  const isNvidia = lower.includes('deepseek') || lower.includes('qwen') || lower.includes('mistral') ||
+    lower.includes('kimi') || lower.includes('gpt-oss') || lower.includes('moonshotai') || lower.includes('nvapi');
+  return { label: modelId.split('/').pop() || modelId, isNvidia };
 }
 
 interface RecStats {
@@ -264,7 +283,12 @@ export function Recommendations({ platform }: { platform: string }) {
           marginBottom: 20, display: 'flex', gap: 20, fontSize: 12, color: '#64748b',
         }}>
           {isFreeProvider ? (
-            <span>Budget: <strong style={{ color: '#22c55e' }}>Free (NVIDIA)</strong></span>
+            <span>
+              Model: <strong style={{ color: '#22c55e' }}>
+                {MODEL_OPTIONS.find(m => m.id === providerId)?.label || providerId}
+              </strong>{' · '}
+              <strong style={{ color: '#22c55e' }}>Free (NVIDIA · 40 RPM)</strong>
+            </span>
           ) : (
             <>
               <span>Daily AI budget: <strong style={{ color: budgetExhausted ? '#ef4444' : '#94a3b8' }}>
@@ -352,6 +376,18 @@ export function Recommendations({ platform }: { platform: string }) {
                     {rec.prior_count - 1} previous
                   </span>
                 )}
+                {rec.model_id && (() => {
+                  const mi = getModelDisplay(rec.model_id);
+                  return (
+                    <span style={{
+                      fontSize: 11, padding: '1px 7px', borderRadius: 3,
+                      background: mi.isNvidia ? '#122d1b' : '#2a1e3b',
+                      color: mi.isNvidia ? '#22c55e' : '#8b5cf6',
+                    }}>
+                      {mi.label}
+                    </span>
+                  );
+                })()}
               </div>
 
               {/* Prices */}

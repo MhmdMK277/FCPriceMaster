@@ -506,6 +506,7 @@ def _insert_recommendation(
     platform: str,
     verdict: dict[str, Any],
     source: str = "llm_autonomous",
+    model_id: str = "claude-haiku-4-5-20251001",
 ) -> dict[str, Any]:
     call = verdict["verdict"]
     confidence = float(verdict["confidence"])
@@ -514,9 +515,9 @@ def _insert_recommendation(
     reasoning = verdict.get("reasoning", "")
 
     cur = con.execute(
-        """INSERT INTO recommendations (card_id, platform, call, confidence, horizon_hours, target_price, reasoning, source)
-           VALUES (?,?,?,?,?,?,?,?)""",
-        (card_id, platform, call, confidence, horizon, target_price, reasoning, source),
+        """INSERT INTO recommendations (card_id, platform, call, confidence, horizon_hours, target_price, reasoning, source, model_id)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (card_id, platform, call, confidence, horizon, target_price, reasoning, source, model_id),
     )
     con.commit()
     return {
@@ -570,7 +571,7 @@ def _futties_85_recommendation(con: sqlite3.Connection, platform: str) -> dict[s
         "suggested_sell_price": None,
         "horizon": "medium (days)",
     }
-    rec = _insert_recommendation(con, None, platform, verdict, source="llm_autonomous")
+    rec = _insert_recommendation(con, None, platform, verdict, source="llm_autonomous", model_id="structural")
     rec["player_name"] = "Fodder 85 (FUTTIES)"
     rec["version_name"] = "fodder"
     return rec
@@ -666,7 +667,7 @@ def generate_recommendations(
                 logger.debug("Hold verdict for %s — skip", card["player_name"])
                 continue
 
-            rec = _insert_recommendation(con, card_id, platform, verdict)
+            rec = _insert_recommendation(con, card_id, platform, verdict, model_id=call_model)
             rec["player_name"] = card["player_name"]
             rec["version_name"] = card["version_name"]
             results.append(rec)
@@ -791,7 +792,7 @@ def _fodder_recommendations(
             continue
 
         verdict["reasoning"] = f"[Fodder rating {rating}] " + verdict.get("reasoning", "")
-        rec = _insert_recommendation(con, None, platform, verdict)
+        rec = _insert_recommendation(con, None, platform, verdict, model_id=call_model)
         rec["player_name"] = f"Fodder {rating}"
         rec["version_name"] = "fodder"
         results.append(rec)

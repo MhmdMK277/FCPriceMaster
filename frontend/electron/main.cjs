@@ -377,6 +377,88 @@ ipcMain.handle('db:getProviderAvailability', () => ({
   nvidia: !!(getNvidiaKey()?.startsWith('nvapi-')),
 }));
 
+// Build context + user message without calling any LLM (used by Ask for incremental per-model calls)
+ipcMain.handle('db:buildAskContext', (_e, { trade_call, platform }) => {
+  const db = openDb();
+  const ctx = buildAskContext(db, trade_call || 'Image analysis', platform || 'pc');
+  return {
+    userMessage: formatUserMessage(ctx, trade_call || 'Image analysis'),
+    context_info: {
+      cards: ctx.mentionedCards.map(c => c.player_name),
+      signals_count: ctx.recentSignals.length,
+    },
+  };
+});
+
+// Call a single LLM provider and return its verdict + timing
+ipcMain.handle('db:callSingleProvider', async (_e, { provider_id, user_message, image_b64 = null, input_text = '' }) => {
+  const start = Date.now();
+
+  if (provider_id === 'haiku') {
+    const apiKey = getAnthropicKey();
+    if (!apiKey) return { provider_id: 'haiku', provider_name: 'Claude Haiku', error: 'ANTHROPIC_API_KEY not set', cost_usd: 0, elapsed_ms: 0 };
+    try {
+      const cfg = readLLMConfig();
+      const wDb = openWriteDb();
+      checkDailyCap(wDb, cfg.daily_cap_usd);
+      const apiResponse = await callAnthropic(apiKey, user_message);
+      const raw = apiResponse.content[0].text;
+      const result = parseVerdictText(raw, 'haiku', 'Claude Haiku');
+      const inputTokens = apiResponse.usage?.input_tokens || 0;
+      const outputTokens = apiResponse.usage?.output_tokens || 0;
+      result.cost_usd = inputTokens * 0.00000025 + outputTokens * 0.00000125;
+      result.elapsed_ms = Date.now() - start;
+      // Log for budget tracking (feature='ask')
+      logLLMCall(wDb, {
+        model: apiResponse.model || 'claude-haiku-4-5-20251001',
+        inputTokens, outputTokens,
+        inputText: input_text,
+        outputJson: JSON.stringify({ verdict: result.action, confidence: result.confidence, reasoning: result.reasoning }),
+        feature: 'ask',
+      });
+      return result;
+    } catch (e) {
+      return { provider_id: 'haiku', provider_name: 'Claude Haiku', error: e.message, cost_usd: 0, elapsed_ms: Date.now() - start };
+    }
+  }
+
+  const modelInfo = NVIDIA_MODELS[provider_id];
+  if (!modelInfo) return { provider_id, provider_name: provider_id, error: `Unknown provider: ${provider_id}`, cost_usd: 0, elapsed_ms: 0 };
+  const nvidiaKey = getNvidiaKey();
+  if (!nvidiaKey) return { provider_id, provider_name: modelInfo.displayName, error: 'NVIDIA_API_KEY not set', cost_usd: 0, elapsed_ms: 0 };
+  try {
+    const apiResponse = await callNvidiaModel(
+      nvidiaKey,
+      modelInfo.modelId,
+      user_message,
+      provider_id === 'mistral-vision' ? image_b64 : null,
+    );
+    const raw = apiResponse.choices?.[0]?.message?.content || '';
+    const result = parseVerdictText(raw, provider_id, modelInfo.displayName);
+    result.elapsed_ms = Date.now() - start;
+    return result;
+  } catch (e) {
+    return { provider_id, provider_name: modelInfo.displayName, error: e.message, cost_usd: 0, elapsed_ms: Date.now() - start };
+  }
+});
+
+// Log aggregate multi-model ask session for history (cost_usd=0 since Haiku already logged its cost)
+ipcMain.handle('db:logAskMulti', (_e, { input_text, verdicts }) => {
+  try {
+    logLLMCall(openWriteDb(), {
+      model: 'multi',
+      inputTokens: 0,
+      outputTokens: 0,
+      inputText: input_text,
+      outputJson: JSON.stringify({ verdicts }),
+      feature: 'ask_multi',
+    });
+  } catch (e) {
+    console.error('[logAskMulti] failed:', e.message);
+  }
+  return { ok: true };
+});
+
 ipcMain.handle('db:askMultiModel', async (_e, { trade_call, provider_ids, platform = 'pc', image_b64 = null }) => {
   if (!provider_ids || provider_ids.length === 0) {
     return { error: 'Select at least one model' };
@@ -699,6 +781,9 @@ if (isSelfTest) {
         'db:askLLM',
         'db:askMultiModel',
         'db:getProviderAvailability',
+        'db:buildAskContext',
+        'db:callSingleProvider',
+        'db:logAskMulti',
       ];
 
       const result = {

@@ -172,6 +172,14 @@ Update status at the end of every session. Do not skip ahead — finish the curr
 - [x] **Session 30:** Discord image parsing — migration 0009 adds `signal_attachments.vision_extracted`; Discord worker processes max 1 image/message with Mistral Vision, appends extracted card info to signal text, then triggers card tagging.
 - [x] **Session 30:** Reddit hardening — explicit root `.env` OAuth load, one clean disabled health row when creds are absent, OAuth user-agent from `REDDIT_USERNAME`, and per-session missing/private subreddit skip after `/about.json` check.
 - [ ] Walk through UI with owner sign-off (Phase 3 + multi-model Ask)
+- [x] **Session 31:** Ask render error fixed — null-guard all `window.fcdb` calls; dev mode shows all providers available for layout testing.
+- [x] **Session 31:** Ask IPC split into `buildAskContext` + `callSingleProvider` + `logAskMulti`; incremental per-model verdict rendering; AbortController cancel button; per-model elapsed timing on cards.
+- [x] **Session 31:** Verdict cards redesigned — grid layout (2-col on wide), colored provider border, Confidence% large, timing, cost, "Show more" toggle.
+- [x] **Session 31:** Mistral Vision checkbox auto-enables when image attached, disabled otherwise; Image button shows filename; ✕ Remove clears attachment and unchecks vision.
+- [x] **Session 31:** Select all / Clear all toggles above model checkboxes (text models only; vision excluded from Select all).
+- [x] **Session 31:** Ask history fixed — `ask_multi` aggregate rows logged per session; history shows verdict summary (N× BUY/HOLD/AVOID) and expands to full verdict cards; History (N) count accurate.
+- [x] **Session 31:** Migration 0010 adds `model_id` column to recommendations; `_insert_recommendation` stores the generating model; recommendation cards show colored AI source badge.
+- [x] **Session 31:** Recommendations budget bar shows model name + "Free (NVIDIA · 40 RPM)" for NVIDIA providers.
 - [!] Accumulate ≥500 outcomes to seed Phase 4 classifier — blocked: Anthropic credits at $0, recommendations not generating
 
 ---

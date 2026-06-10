@@ -104,8 +104,16 @@ Updating for FC27: add new dated windows to the YAML. No code change.
 
 **Decision:** LLM provider calls are split into two independent layers:
 
-1. **Autonomous recommender** (`recommender.py`): stays Anthropic Haiku-only. Budget guards (`_check_autonomous_budget`) limit spend to $0.02/day.
-2. **Ask feature** (`main.cjs` + `Ask.tsx`): supports parallel multi-model via `db:askMultiModel` IPC. Anthropic Haiku + any number of NVIDIA NIM models (OpenAI-compatible API).
+1. **Autonomous recommender** (`recommender.py`): supports Haiku or any NVIDIA provider via `provider_id` param. Budget guards (`_check_autonomous_budget`) limit autonomous spend to $0.02/day. Each recommendation row stores `model_id` (migration 0010) so the UI can show which model produced it.
+2. **Ask feature** (`main.cjs` + `Ask.tsx`): parallel per-model calls via `db:callSingleProvider` IPC (one IPC call per model, all fired concurrently). `db:buildAskContext` builds context once. `db:logAskMulti` writes one aggregate `ask_multi` row to `llm_calls` for history. This allows incremental rendering (each model's card appears as it resolves) and AbortController cancel.
+
+### Ask IPC flow (2026-06-10)
+Three-handler split for cancellable incremental multi-model analysis:
+- `db:buildAskContext(trade_call, platform)` → context + formatted user message (no LLM)
+- `db:callSingleProvider(provider_id, user_message, image_b64?, input_text?)` → verdict + elapsed_ms; Haiku calls also log to `llm_calls` for budget tracking
+- `db:logAskMulti(input_text, verdicts[])` → one `ask_multi` row in `llm_calls` for history; cost_usd=0 (Haiku cost already tracked by callSingleProvider)
+
+History is filtered to `feature IN ('ask', 'ask_multi')` so autonomous recs don't pollute Ask history.
 
 **Python providers module** (`backend/src/llm/providers/`): provides `BaseProvider`, `AnthropicProvider`, `NvidiaProvider`, and subclasses for each NVIDIA model. The `registry.py` `get_available_providers()` function uses env-key presence to determine availability. This module is intended for future use in the recommender and for testing; the current multi-model UI calls are handled entirely in Node.js (`main.cjs`) for simplicity.
 

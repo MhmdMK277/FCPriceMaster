@@ -846,3 +846,132 @@
   color: #94a3b8;
   line-height: 1.4;
 }
+
+/* ============================================================
+   Multi-verdict grid (Ask view)
+   ============================================================ */
+.multi-disagree-banner {
+  background: #2d1a1a;
+  border: 1px solid #7f1d1d;
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: #fca5a5;
+  margin-bottom: 12px;
+}
+
+.multi-verdict-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.multi-verdict-card {
+  background: #0d1829;
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+
+.multi-verdict-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.multi-verdict-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e2e8f0;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.multi-verdict-confidence {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.multi-verdict-conf-num {
+  font-size: 22px;
+  font-weight: 700;
+  color: #f1f5f9;
+}
+
+.multi-verdict-meta {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.multi-verdict-reasoning { margin-bottom: 10px; }
+.multi-verdict-reasoning p {
+  font-size: 13px;
+  color: #cbd5e1;
+  line-height: 1.5;
+  margin: 0 0 6px;
+}
+
+.multi-verdict-expand {
+  background: none;
+  border: none;
+  color: #38bdf8;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+.multi-verdict-expand:hover { text-decoration: underline; }
+
+.multi-verdict-footer {
+  display: flex;
+  align-items: center;
+  margin-top: 8px;
+  font-size: 12px;
+  color: #475569;
+}
+
+.multi-verdict-horizon {
+  background: #1e293b;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  color: #64748b;
+}
+
+.multi-verdict-err-text {
+  font-size: 12px;
+  color: #f87171;
+  margin: 0;
+  line-height: 1.4;
+}
+
+/* Provider badges */
+.provider-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 3px;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+}
+.provider-badge-nvidia    { background: #122d1b; color: #22c55e; border: 1px solid #22c55e55; }
+.provider-badge-anthropic { background: #2a1e3b; color: #8b5cf6; border: 1px solid #8b5cf655; }
+
+/* Select all / Clear all toggles */
+.ask-toggle-link {
+  background: none;
+  border: none;
+  color: #38bdf8;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+.ask-toggle-link:hover { text-decoration: underline; }

@@ -187,7 +187,8 @@ function getFodderHistory(db, { rating, platform, hoursBack = 168 } = {}) {
 const LLM_HISTORY_SQL = `
   SELECT id, ts_utc, model, input_tokens, output_tokens, cost_usd, feature, input_text, output_json
   FROM llm_calls
-  WHERE ts_utc >= datetime('now', '-1 day')
+  WHERE ts_utc >= datetime('now', '-7 days')
+    AND feature IN ('ask', 'ask_multi')
   ORDER BY ts_utc DESC
   LIMIT ?`;
 
@@ -227,7 +228,8 @@ const GET_RECS_DEDUPED_SQL = `
     r.platform, r.call, r.confidence, r.horizon_hours,
     r.target_price, r.reasoning, r.ts_utc, r.dismissed_at,
     o.verdict AS outcome_verdict,
-    com.prior_count
+    com.prior_count,
+    COALESCE(r.model_id, 'claude-haiku-4-5-20251001') AS model_id
   FROM combined com
   JOIN recommendations r ON r.id = com.id
   LEFT JOIN cards c ON c.id = r.card_id
@@ -243,7 +245,8 @@ const GET_RECS_ALL_SQL = `
     r.platform, r.call, r.confidence, r.horizon_hours,
     r.target_price, r.reasoning, r.ts_utc, r.dismissed_at,
     o.verdict AS outcome_verdict,
-    1 AS prior_count
+    1 AS prior_count,
+    COALESCE(r.model_id, 'claude-haiku-4-5-20251001') AS model_id
   FROM recommendations r
   LEFT JOIN cards c ON c.id = r.card_id
   LEFT JOIN outcomes o ON o.recommendation_id = r.id

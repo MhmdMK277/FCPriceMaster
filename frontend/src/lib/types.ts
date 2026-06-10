@@ -160,6 +160,7 @@ export interface MultiModelVerdict {
   suggested_buy_price: number | null;
   suggested_sell_price: number | null;
   cost_usd: number;
+  elapsed_ms?: number;
   error?: string;
 }
 

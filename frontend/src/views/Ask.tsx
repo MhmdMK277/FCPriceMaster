@@ -1,188 +1,244 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { Platform, AskResult, AskVerdict, LLMHistoryRow, MultiModelResult, MultiModelVerdict, ProviderAvailability } from '../lib/types';
+import type { Platform, LLMHistoryRow, MultiModelVerdict, ProviderAvailability } from '../lib/types';
 
-const NVIDIA_PROVIDERS = [
-  { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
-  { id: 'kimi-k2-6',       name: 'Kimi K2.6' },
-  { id: 'qwen3-80b',       name: 'Qwen3 80B' },
-  { id: 'mistral-small',   name: 'Mistral Small' },
-  { id: 'gpt-oss-120b',    name: 'GPT OSS 120B' },
-  { id: 'mistral-vision',  name: 'Mistral Vision', image: true },
+const TEXT_PROVIDER_LIST = [
+  { id: 'haiku',           name: 'Claude Haiku',    isNvidia: false },
+  { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', isNvidia: true  },
+  { id: 'kimi-k2-6',       name: 'Kimi K2.6',       isNvidia: true  },
+  { id: 'qwen3-80b',       name: 'Qwen3 80B',        isNvidia: true  },
+  { id: 'mistral-small',   name: 'Mistral Small',    isNvidia: true  },
+  { id: 'gpt-oss-120b',    name: 'GPT OSS 120B',    isNvidia: true  },
 ];
+const VISION_PROVIDER = { id: 'mistral-vision', name: 'Mistral Vision', isNvidia: true, image: true };
+const ALL_DISPLAY_PROVIDERS = [...TEXT_PROVIDER_LIST, VISION_PROVIDER];
+
+function formatElapsed(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`;
+}
 
 function VerdictBadge({ verdict }: { verdict: string | null | undefined }) {
   if (!verdict) return null;
-  const cls = verdict === 'buy' ? 'verdict-buy' : verdict === 'hold' ? 'verdict-hold' : 'verdict-avoid';
-  return <span className={`verdict-badge ${cls}`}>{verdict.toUpperCase()}</span>;
-}
-
-function RiskBadge({ risk }: { risk: string }) {
-  const cls = risk === 'low' ? 'risk-low' : risk === 'high' ? 'risk-high' : 'risk-medium';
-  return <span className={`risk-badge ${cls}`}>{risk}</span>;
+  const v = verdict.toLowerCase();
+  const cls = v === 'buy' ? 'verdict-buy' : v === 'hold' ? 'verdict-hold' : 'verdict-avoid';
+  return <span className={`verdict-badge ${cls}`}>{v.toUpperCase()}</span>;
 }
 
 function ProviderBadge({ isNvidia }: { isNvidia: boolean }) {
   return (
-    <span className={`provider-badge ${isNvidia ? 'provider-nvidia' : 'provider-anthropic'}`}>
+    <span className={`provider-badge ${isNvidia ? 'provider-badge-nvidia' : 'provider-badge-anthropic'}`}>
       {isNvidia ? 'NVIDIA' : 'Anthropic'}
     </span>
-  );
-}
-
-function fmt(n: number | null | undefined): string {
-  if (n == null) return '—';
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
-}
-
-function SingleResult({ result }: { result: AskResult }) {
-  return (
-    <div className="ask-result">
-      <div className="ask-result-header">
-        <VerdictBadge verdict={result.verdict.verdict} />
-        <span className="ask-confidence">{result.verdict.confidence}% confidence</span>
-        <RiskBadge risk={result.verdict.risk} />
-        <span className="ask-horizon">{result.verdict.horizon}</span>
-      </div>
-      <p className="ask-reasoning">{result.verdict.reasoning}</p>
-      <p className="ask-price-context">{result.verdict.price_context}</p>
-      {(result.verdict.suggested_buy_price || result.verdict.suggested_sell_price) && (
-        <div className="ask-prices">
-          {result.verdict.suggested_buy_price && (
-            <span className="ask-price-item">
-              <span className="ask-price-label">Buy at:</span>
-              <span className="ask-price-value">{fmt(result.verdict.suggested_buy_price)}</span>
-            </span>
-          )}
-          {result.verdict.suggested_sell_price && (
-            <span className="ask-price-item">
-              <span className="ask-price-label">Sell at:</span>
-              <span className="ask-price-value">{fmt(result.verdict.suggested_sell_price)}</span>
-            </span>
-          )}
-        </div>
-      )}
-      {result.context_used && (
-        <div className="ask-context-used">
-          {result.context_used.cards.length > 0 && (
-            <span className="ask-ctx-pill">Cards: {result.context_used.cards.join(', ')}</span>
-          )}
-          {result.context_used.signals_count > 0 && (
-            <span className="ask-ctx-pill">{result.context_used.signals_count} signals used</span>
-          )}
-        </div>
-      )}
-    </div>
   );
 }
 
 function MultiVerdictCard({ v }: { v: MultiModelVerdict }) {
   const [open, setOpen] = useState(false);
   const isNvidia = v.provider_id !== 'haiku';
+  const borderColor = isNvidia ? '#22c55e' : '#8b5cf6';
+  const PREVIEW = 120;
+  const reasoning = v.reasoning || '';
 
   if (v.error) {
     return (
-      <div className="multi-verdict-card multi-verdict-error">
+      <div className="multi-verdict-card" style={{ borderLeft: `3px solid #ef4444` }}>
         <div className="multi-verdict-header">
           <ProviderBadge isNvidia={isNvidia} />
           <span className="multi-verdict-name">{v.provider_name}</span>
         </div>
-        <p className="multi-verdict-err-text">{v.error}</p>
+        <p className="multi-verdict-err-text">{(v.error || '').slice(0, 140)}</p>
       </div>
     );
   }
 
   return (
-    <div className={`multi-verdict-card multi-verdict-${v.action}`}>
+    <div className="multi-verdict-card" style={{ borderLeft: `3px solid ${borderColor}` }}>
       <div className="multi-verdict-header">
         <ProviderBadge isNvidia={isNvidia} />
         <span className="multi-verdict-name">{v.provider_name}</span>
         <VerdictBadge verdict={v.action} />
-        <span className="ask-confidence">{v.confidence}%</span>
-        <RiskBadge risk={v.risk} />
+      </div>
+      <div className="multi-verdict-confidence">
+        <span className="multi-verdict-conf-num">{v.confidence}%</span>
+        <span className="multi-verdict-meta">
+          {v.elapsed_ms != null ? formatElapsed(v.elapsed_ms) : ''}
+          {v.cost_usd > 0 ? ` · $${v.cost_usd.toFixed(4)}` : ' · free'}
+        </span>
       </div>
       <div className="multi-verdict-reasoning">
-        <p className={open ? '' : 'multi-verdict-clamp'}>{v.reasoning}</p>
-        {v.reasoning.length > 120 && (
+        <p>{open || reasoning.length <= PREVIEW ? reasoning : reasoning.slice(0, PREVIEW) + '…'}</p>
+        {reasoning.length > PREVIEW && (
           <button className="multi-verdict-expand" onClick={() => setOpen(o => !o)}>
-            {open ? 'Less' : 'More'}
+            {open ? 'Show less' : 'Show more'}
           </button>
         )}
       </div>
       <div className="multi-verdict-footer">
         <span className="multi-verdict-horizon">{v.horizon}</span>
-        <span className="multi-verdict-cost">
-          {v.cost_usd > 0 ? `$${v.cost_usd.toFixed(4)}` : '$0.00'}
+      </div>
+    </div>
+  );
+}
+
+function PendingCard({ name, isNvidia }: { name: string; isNvidia: boolean }) {
+  const borderColor = isNvidia ? '#22c55e' : '#8b5cf6';
+  return (
+    <div className="multi-verdict-card" style={{ borderLeft: `3px solid ${borderColor}`, opacity: 0.55 }}>
+      <div className="multi-verdict-header">
+        <ProviderBadge isNvidia={isNvidia} />
+        <span className="multi-verdict-name">{name}</span>
+        <span className="ask-spinner" style={{ marginLeft: 8 }} />
+      </div>
+      <p style={{ color: '#64748b', fontSize: 13, margin: 0 }}>Querying…</p>
+    </div>
+  );
+}
+
+function CancelledCard({ name, isNvidia }: { name: string; isNvidia: boolean }) {
+  const borderColor = isNvidia ? '#22c55e' : '#8b5cf6';
+  return (
+    <div className="multi-verdict-card" style={{ borderLeft: `3px solid ${borderColor}`, opacity: 0.35 }}>
+      <div className="multi-verdict-header">
+        <ProviderBadge isNvidia={isNvidia} />
+        <span className="multi-verdict-name">{name}</span>
+        <span style={{ fontSize: 11, color: '#64748b', background: '#1e293b', padding: '2px 6px', borderRadius: 3 }}>
+          cancelled
         </span>
       </div>
     </div>
   );
 }
 
-function MultiResult({ result }: { result: MultiModelResult }) {
-  const successVerdicts = result.verdicts.filter(v => !v.error);
-  const actions = [...new Set(successVerdicts.map(v => v.action))];
-  const disagree = actions.length > 1;
+function HistoryRow({
+  row,
+  expanded,
+  onToggle,
+}: {
+  row: LLMHistoryRow;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const badgeSty = (bg: string, color: string) => ({
+    background: bg, color, padding: '1px 6px', borderRadius: 3, fontSize: 11,
+  });
+
+  if (row.feature === 'ask_multi') {
+    let verdicts: MultiModelVerdict[] = [];
+    try {
+      const parsed = JSON.parse(row.output_json || '{}') as { verdicts?: MultiModelVerdict[] };
+      verdicts = parsed.verdicts || [];
+    } catch { /**/ }
+    const buyCount   = verdicts.filter(v => v.action === 'buy').length;
+    const holdCount  = verdicts.filter(v => v.action === 'hold').length;
+    const avoidCount = verdicts.filter(v => v.action === 'avoid').length;
+    const errCount   = verdicts.filter(v => !!v.error).length;
+
+    return (
+      <div className="ask-history-row" style={{ cursor: 'pointer' }} onClick={onToggle}>
+        <div className="ask-history-meta">
+          <span className="age">{new Date(row.ts_utc).toLocaleString()}</span>
+          <span style={{ fontSize: 11, color: '#64748b' }}>{verdicts.length} models</span>
+          {buyCount   > 0 && <span style={badgeSty('#14532d', '#4ade80')}>{buyCount}× BUY</span>}
+          {holdCount  > 0 && <span style={badgeSty('#1c1a08', '#fbbf24')}>{holdCount}× HOLD</span>}
+          {avoidCount > 0 && <span style={badgeSty('#450a0a', '#f87171')}>{avoidCount}× AVOID</span>}
+          {errCount   > 0 && <span style={{ fontSize: 11, color: '#64748b' }}>{errCount} err</span>}
+        </div>
+        <div className="ask-history-text">
+          {(row.input_text || '').slice(0, 100)}{(row.input_text || '').length > 100 ? '…' : ''}
+        </div>
+        {expanded && verdicts.length > 0 && (
+          <div
+            className="multi-verdict-grid"
+            style={{ marginTop: 10 }}
+            onClick={e => e.stopPropagation()}
+          >
+            {verdicts.map(v => <MultiVerdictCard key={v.provider_id} v={v} />)}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Legacy single-model row (feature='ask')
+  let verdictStr: string | null = null;
+  try {
+    const p = JSON.parse(row.output_json || '{}') as { verdict?: string };
+    verdictStr = p.verdict || null;
+  } catch { /**/ }
 
   return (
-    <div className="multi-result">
-      {disagree && (
-        <div className="multi-disagree-banner">
-          ⚠ Models disagree — {successVerdicts.map(v => `${v.provider_name}: ${v.action.toUpperCase()}`).join(' · ')}
-        </div>
-      )}
-      {result.context_used.cards.length > 0 && (
-        <div className="ask-context-used">
-          <span className="ask-ctx-pill">Cards: {result.context_used.cards.join(', ')}</span>
-          {result.context_used.signals_count > 0 && (
-            <span className="ask-ctx-pill">{result.context_used.signals_count} signals used</span>
-          )}
-        </div>
-      )}
-      <div className="multi-verdict-grid">
-        {result.verdicts.map(v => <MultiVerdictCard key={v.provider_id} v={v} />)}
+    <div className="ask-history-row">
+      <div className="ask-history-meta">
+        <span className="age">{new Date(row.ts_utc).toLocaleString()}</span>
+        {verdictStr && <VerdictBadge verdict={verdictStr} />}
+        <span className="ask-history-cost">${(row.cost_usd || 0).toFixed(4)}</span>
       </div>
+      <div className="ask-history-text">{row.input_text}</div>
     </div>
   );
 }
 
+type VerdictState = MultiModelVerdict | 'pending' | 'cancelled';
+
 export function Ask({ platform, setPlatform }: { platform: Platform; setPlatform: (p: Platform) => void }) {
+  const isElectron = typeof window !== 'undefined' && !!window.fcdb;
+
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(false);
-  const [singleResult, setSingleResult] = useState<AskResult | null>(null);
-  const [multiResult, setMultiResult] = useState<MultiModelResult | null>(null);
+  const [verdictsByProvider, setVerdictsByProvider] = useState<Record<string, VerdictState>>({});
+  const [contextInfo, setContextInfo] = useState<{ cards: string[]; signals_count: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<LLMHistoryRow[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyExpanded, setHistoryExpanded] = useState<Set<number>>(new Set());
   const [dailyStats, setDailyStats] = useState<{ calls: number; cost_usd: number } | null>(null);
-  const [providerAvail, setProviderAvail] = useState<ProviderAvailability>({ haiku: true, nvidia: false });
+  const [providerAvail, setProviderAvail] = useState<ProviderAvailability>({ haiku: true, nvidia: true });
   const [selectedProviders, setSelectedProviders] = useState<string[]>(['haiku']);
   const [imageB64, setImageB64] = useState<string | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [imageFileName, setImageFileName] = useState<string | null>(null);
   const [imageNote, setImageNote] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const loadHistory = useCallback(async () => {
-    const rows = await window.fcdb.getLLMHistory({ limit: 10 });
-    setHistory(rows);
-    if (rows.length > 0) {
+    if (!isElectron) return;
+    try {
+      const rows = await window.fcdb.getLLMHistory({ limit: 30 });
+      setHistory(rows);
       const totalCost = rows.reduce((s: number, r: LLMHistoryRow) => s + (r.cost_usd || 0), 0);
-      setDailyStats({ calls: rows.length, cost_usd: totalCost });
-    }
-  }, []);
+      if (rows.length > 0) setDailyStats({ calls: rows.length, cost_usd: totalCost });
+    } catch { /**/ }
+  }, [isElectron]);
 
   useEffect(() => {
+    if (!isElectron) {
+      setProviderAvail({ haiku: true, nvidia: true });
+      return;
+    }
     loadHistory();
     window.fcdb.getProviderAvailability().then((avail: ProviderAvailability) => {
       setProviderAvail(avail);
-    }).catch(() => {});
-  }, [loadHistory]);
+      if (!avail.haiku && avail.nvidia) setSelectedProviders(['deepseek-v4-pro']);
+    }).catch(() => { /**/ });
+  }, [loadHistory, isElectron]);
 
   function toggleProvider(id: string) {
     setSelectedProviders(prev =>
-      prev.includes(id) ? prev.filter(p => p !== id) : [...prev, id]
+      prev.includes(id) ? prev.filter(p => p !== id) : [...prev, id],
     );
+  }
+
+  function selectAll() {
+    const available: string[] = [];
+    if (providerAvail.haiku) available.push('haiku');
+    if (providerAvail.nvidia) available.push('deepseek-v4-pro', 'kimi-k2-6', 'qwen3-80b', 'mistral-small', 'gpt-oss-120b');
+    setSelectedProviders(available);
+  }
+
+  function clearAll() {
+    setSelectedProviders([]);
   }
 
   function handleImageSelected(file: File | null) {
@@ -194,9 +250,14 @@ export function Ask({ platform, setPlatform }: { platform: Platform; setPlatform
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = String(reader.result || '');
-      setImageB64(dataUrl.split(',', 2)[1] || null);
+      const b64 = dataUrl.split(',', 2)[1] || null;
+      setImageB64(b64);
       setImagePreview(dataUrl);
-      setImageNote(null);
+      setImageFileName(file.name);
+      if (providerAvail.nvidia) {
+        setSelectedProviders(prev => prev.includes('mistral-vision') ? prev : [...prev, 'mistral-vision']);
+        setImageNote('Auto-selected for image analysis');
+      }
     };
     reader.readAsDataURL(file);
   }
@@ -204,52 +265,115 @@ export function Ask({ platform, setPlatform }: { platform: Platform; setPlatform
   function clearImage() {
     setImageB64(null);
     setImagePreview(null);
+    setImageFileName(null);
     setImageNote(null);
+    setSelectedProviders(prev => prev.filter(p => p !== 'mistral-vision'));
     if (fileInputRef.current) fileInputRef.current.value = '';
+  }
+
+  function handleCancel() {
+    if (abortRef.current) abortRef.current.abort();
+    setVerdictsByProvider(prev => {
+      const next = { ...prev };
+      Object.keys(next).forEach(k => { if (next[k] === 'pending') next[k] = 'cancelled'; });
+      return next;
+    });
+    setLoading(false);
+    setError('Cancelled');
+    setTimeout(() => setError(e => e === 'Cancelled' ? null : e), 1500);
   }
 
   async function handleAnalyse() {
     if (!text.trim() && !imageB64) return;
-    let providers = selectedProviders.filter(id => id === 'haiku' ? providerAvail.haiku : providerAvail.nvidia);
-    if (imageB64 && providerAvail.nvidia && !providers.includes('mistral-vision')) {
-      providers = [...providers, 'mistral-vision'];
-      setSelectedProviders(prev => prev.includes('mistral-vision') ? prev : [...prev, 'mistral-vision']);
-      setImageNote('Mistral Vision auto-selected for image analysis');
-    }
-    if (providers.length === 0) {
-      setError('Select at least one model');
-      return;
-    }
+    if (!isElectron) { setError('Electron context required for live analysis'); return; }
+
+    const providers = selectedProviders.filter(id => {
+      if (id === 'haiku') return providerAvail.haiku;
+      if (id === 'mistral-vision') return providerAvail.nvidia && !!imageB64;
+      return providerAvail.nvidia;
+    });
+    if (providers.length === 0) { setError('Select at least one model'); return; }
+
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     setLoading(true);
     setError(null);
-    setSingleResult(null);
-    setMultiResult(null);
+    setContextInfo(null);
+
+    const pending: Record<string, VerdictState> = {};
+    providers.forEach(p => { pending[p] = 'pending'; });
+    setVerdictsByProvider(pending);
 
     try {
-      const res = await window.fcdb.askMultiModel({
-        trade_call: text.trim() || 'Image analysis',
-        provider_ids: providers,
-        platform,
-        image_b64: imageB64,
+      const { userMessage, context_info } = await window.fcdb.buildAskContext({ trade_call: text.trim() || 'Image analysis', platform });
+      if (ctrl.signal.aborted) return;
+      setContextInfo(context_info);
+
+      const tradeCallText = text.trim() || 'Image analysis';
+      const tasks = providers.map(async (providerId) => {
+        try {
+          const verdict = await window.fcdb.callSingleProvider({
+            provider_id: providerId,
+            user_message: userMessage,
+            image_b64: imageB64,
+            input_text: tradeCallText,
+          });
+          if (!ctrl.signal.aborted) {
+            setVerdictsByProvider(prev => ({ ...prev, [providerId]: verdict }));
+          }
+          return verdict;
+        } catch (e: unknown) {
+          const errMsg = e instanceof Error ? e.message : String(e);
+          const info = ALL_DISPLAY_PROVIDERS.find(p => p.id === providerId);
+          const errVerdict: MultiModelVerdict = {
+            provider_id: providerId,
+            provider_name: info?.name || providerId,
+            error: errMsg,
+            action: 'hold', confidence: 0, reasoning: '', price_context: '', risk: 'medium',
+            horizon: '', suggested_buy_price: null, suggested_sell_price: null, cost_usd: 0,
+          };
+          if (!ctrl.signal.aborted) {
+            setVerdictsByProvider(prev => ({ ...prev, [providerId]: errVerdict }));
+          }
+          return errVerdict;
+        }
       });
-      if (res.error) {
-        setError(res.error);
-      } else {
-        setMultiResult(res);
+
+      const allVerdicts = await Promise.all(tasks);
+      if (!ctrl.signal.aborted) {
+        setLoading(false);
+        window.fcdb.logAskMulti({ input_text: tradeCallText, verdicts: allVerdicts }).catch(() => { /**/ });
         loadHistory();
       }
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
+      if (!ctrl.signal.aborted) {
+        setError(e instanceof Error ? e.message : String(e));
+        setLoading(false);
+      }
     }
   }
+
+  // Disagree banner
+  const resolvedVerdicts = Object.values(verdictsByProvider)
+    .filter((v): v is MultiModelVerdict => v !== 'pending' && v !== 'cancelled');
+  const successVerdicts = resolvedVerdicts.filter(v => !v.error);
+  const uniqueActions = [...new Set(successVerdicts.map(v => v.action))];
+  const disagree = uniqueActions.length > 1;
+
+  const hasVerdicts = Object.keys(verdictsByProvider).length > 0;
+
+  const multiHistoryCount = history.filter(r => r.feature === 'ask_multi').length;
 
   return (
     <div className="view">
       <div className="view-header">
         <h2>Ask</h2>
         <span className="ask-subtitle">AI trade-call analysis</span>
+        {!isElectron && (
+          <span style={{ fontSize: 11, color: '#f59e0b', background: '#1c1a08', padding: '2px 8px', borderRadius: 3 }}>
+            dev mode — Electron required for live data
+          </span>
+        )}
       </div>
 
       <div className="ask-input-area">
@@ -260,6 +384,8 @@ export function Ask({ platform, setPlatform }: { platform: Platform; setPlatform
           onChange={e => setText(e.target.value)}
           rows={4}
         />
+
+        {/* Image attach row */}
         <div className="ask-attach-row">
           <input
             ref={fileInputRef}
@@ -269,79 +395,82 @@ export function Ask({ platform, setPlatform }: { platform: Platform; setPlatform
             onChange={e => handleImageSelected(e.target.files?.[0] || null)}
           />
           <button className="attach-btn" onClick={() => fileInputRef.current?.click()} type="button">
-            Image
+            {imageFileName ? `📎 ${imageFileName}` : 'Image'}
           </button>
           {imagePreview && (
-            <button className="attach-clear" onClick={clearImage} type="button">
-              Remove
-            </button>
+            <button className="attach-clear" onClick={clearImage} type="button">✕ Remove</button>
           )}
           {imageNote && <span className="ask-image-note">{imageNote}</span>}
         </div>
         {imagePreview && (
           <div className="ask-image-preview">
-            <img src={imagePreview} alt="Attached preview" />
+            <img src={imagePreview} alt="Attached" />
           </div>
         )}
 
-        <div className="ask-provider-row">
-          <span className="ask-label">Models:</span>
-          <label
-            className={`provider-checkbox ${!providerAvail.haiku ? 'provider-checkbox-disabled' : ''}`}
-            title={providerAvail.haiku ? '' : 'No ANTHROPIC_API_KEY set in .env'}
-          >
-            <input
-              type="checkbox"
-              checked={selectedProviders.includes('haiku') && providerAvail.haiku}
-              disabled={!providerAvail.haiku}
-              onChange={() => toggleProvider('haiku')}
-            />
-            <span className={`provider-chip ${providerAvail.haiku ? 'provider-chip-anthropic' : 'provider-chip-nokey'}`}>
-              Claude Haiku{!providerAvail.haiku ? ' (No key)' : ''}
-            </span>
-          </label>
-          {NVIDIA_PROVIDERS.map(p => {
-            const available = providerAvail.nvidia;
-            const checked = selectedProviders.includes(p.id);
-            return (
-              <label
-                key={p.id}
-                className={`provider-checkbox ${!available ? 'provider-checkbox-disabled' : ''}`}
-                title={available ? '' : 'No NVIDIA_API_KEY set in .env'}
-              >
-                <input
-                  type="checkbox"
-                  checked={checked && available}
-                  disabled={!available}
-                  onChange={() => toggleProvider(p.id)}
-                />
-                <span className={`provider-chip ${available ? 'provider-chip-nvidia' : 'provider-chip-nokey'}`}>
-                  {p.name}{p.image ? ' (image)' : ''}{!available ? ' (No key)' : ''}
-                </span>
-              </label>
-            );
-          })}
+        {/* Model selector */}
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+            <span className="ask-label">Models:</span>
+            <button className="ask-toggle-link" onClick={selectAll} type="button">Select all</button>
+            <span style={{ color: '#334155', fontSize: 12 }}>·</span>
+            <button className="ask-toggle-link" onClick={clearAll} type="button">Clear all</button>
+          </div>
+          <div className="ask-provider-row">
+            {ALL_DISPLAY_PROVIDERS.map(p => {
+              const isMistralVision = p.id === 'mistral-vision';
+              const available = p.isNvidia ? providerAvail.nvidia : providerAvail.haiku;
+              const disabled = !available || (isMistralVision && !imageB64);
+              const checked = selectedProviders.includes(p.id) && !disabled;
+              const title = !available
+                ? `No ${p.isNvidia ? 'NVIDIA' : 'ANTHROPIC'}_API_KEY set in .env`
+                : isMistralVision && !imageB64
+                  ? 'Attach an image to enable Mistral Vision'
+                  : '';
+              return (
+                <label
+                  key={p.id}
+                  className={`provider-checkbox ${disabled ? 'provider-checkbox-disabled' : ''}`}
+                  title={title}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    disabled={disabled}
+                    onChange={() => { if (!isMistralVision) toggleProvider(p.id); }}
+                  />
+                  <span className={`provider-chip ${
+                    !available ? 'provider-chip-nokey' : p.isNvidia ? 'provider-chip-nvidia' : 'provider-chip-anthropic'
+                  }`}>
+                    {p.name}
+                    {!available ? ' (No key)' : ''}
+                    {isMistralVision && !imageB64 ? ' (image only)' : ''}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
         </div>
 
+        {/* Controls row */}
         <div className="ask-controls">
           <div className="ask-platform-row">
             <span className="ask-label">Platform:</span>
-            <button
-              className={`plat-btn ${platform === 'pc' ? 'active' : ''}`}
-              onClick={() => setPlatform('pc')}
-            >PC</button>
-            <button
-              className={`plat-btn ${platform === 'console' ? 'active' : ''}`}
-              onClick={() => setPlatform('console')}
-            >Console</button>
+            <button className={`plat-btn ${platform === 'pc' ? 'active' : ''}`} onClick={() => setPlatform('pc')}>PC</button>
+            <button className={`plat-btn ${platform === 'console' ? 'active' : ''}`} onClick={() => setPlatform('console')}>Console</button>
           </div>
-          <button
-            className="btn ask-btn"
-            onClick={handleAnalyse}
-            disabled={loading || (!text.trim() && !imageB64)}
-          >
-            {loading ? 'Thinking…' : selectedProviders.length > 1 ? `Analyse (${selectedProviders.length} models)` : 'Analyse'}
-          </button>
+          {loading ? (
+            <button className="btn btn-danger ask-btn" onClick={handleCancel} type="button">Cancel</button>
+          ) : (
+            <button
+              className="btn ask-btn"
+              onClick={handleAnalyse}
+              disabled={!text.trim() && !imageB64}
+              type="button"
+            >
+              {selectedProviders.length > 1 ? `Analyse (${selectedProviders.length} models)` : 'Analyse'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -350,49 +479,64 @@ export function Ask({ platform, setPlatform }: { platform: Platform; setPlatform
       {loading && (
         <div className="ask-loading">
           <span className="ask-spinner" />
-          {selectedProviders.length > 1 ? `Querying ${selectedProviders.length} models in parallel…` : 'Analysing trade call…'}
+          {`Querying ${Object.values(verdictsByProvider).filter(v => v === 'pending').length} model(s) in parallel…`}
         </div>
       )}
 
-      {singleResult && !loading && <SingleResult result={singleResult} />}
-      {multiResult && !loading && <MultiResult result={multiResult} />}
+      {/* Verdict grid */}
+      {hasVerdicts && (
+        <div style={{ marginBottom: 16, maxWidth: 860 }}>
+          {!loading && disagree && (
+            <div className="multi-disagree-banner">
+              ⚠ Models disagree — {successVerdicts.map(v => `${v.provider_name}: ${(v.action || '').toUpperCase()}`).join(' · ')}
+            </div>
+          )}
+          {contextInfo && (contextInfo.cards.length > 0 || contextInfo.signals_count > 0) && (
+            <div className="ask-context-used" style={{ marginBottom: 12 }}>
+              {contextInfo.cards.length > 0 && (
+                <span className="ask-ctx-pill">Cards: {contextInfo.cards.join(', ')}</span>
+              )}
+              {contextInfo.signals_count > 0 && (
+                <span className="ask-ctx-pill">{contextInfo.signals_count} signals used</span>
+              )}
+            </div>
+          )}
+          <div className="multi-verdict-grid">
+            {ALL_DISPLAY_PROVIDERS.filter(p => p.id in verdictsByProvider).map(p => {
+              const state = verdictsByProvider[p.id];
+              if (state === 'pending')   return <PendingCard   key={p.id} name={p.name} isNvidia={p.isNvidia} />;
+              if (state === 'cancelled') return <CancelledCard key={p.id} name={p.name} isNvidia={p.isNvidia} />;
+              return <MultiVerdictCard key={p.id} v={state} />;
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="ask-footer">
         {dailyStats && (
           <span className="ask-usage">
-            Today: {dailyStats.calls} call{dailyStats.calls !== 1 ? 's' : ''}, ~${dailyStats.cost_usd.toFixed(4)} used
+            Today: {dailyStats.calls} session{dailyStats.calls !== 1 ? 's' : ''}, ~${dailyStats.cost_usd.toFixed(4)} used
           </span>
         )}
-        <button
-          className="ask-history-toggle"
-          onClick={() => setHistoryOpen(o => !o)}
-        >
-          {historyOpen ? 'Hide history' : `History (${history.length})`}
+        <button className="ask-history-toggle" onClick={() => setHistoryOpen(o => !o)} type="button">
+          {historyOpen ? 'Hide history' : `History (${multiHistoryCount || history.length})`}
         </button>
       </div>
 
       {historyOpen && history.length > 0 && (
         <div className="ask-history">
-          {history.map((row: LLMHistoryRow) => {
-            let parsedVerdict: AskVerdict | null = null;
-            let verdictString: string | null = null;
-            try {
-              const parsed = JSON.parse(row.output_json || '{}') as AskResult;
-              parsedVerdict = parsed?.verdict ?? null;
-              verdictString = parsed?.verdict?.verdict ?? null;
-            } catch {}
-            return (
-              <div key={row.id} className="ask-history-row">
-                <div className="ask-history-meta">
-                  <span className="age">{new Date(row.ts_utc).toLocaleString()}</span>
-                  {verdictString && <VerdictBadge verdict={verdictString} />}
-                  <span className="ask-history-cost">${(row.cost_usd || 0).toFixed(4)}</span>
-                </div>
-                <div className="ask-history-text">{row.input_text}</div>
-                {parsedVerdict && <div className="ask-history-reasoning">{parsedVerdict.reasoning}</div>}
-              </div>
-            );
-          })}
+          {history.map((row: LLMHistoryRow) => (
+            <HistoryRow
+              key={row.id}
+              row={row}
+              expanded={historyExpanded.has(row.id)}
+              onToggle={() => setHistoryExpanded(prev => {
+                const next = new Set(prev);
+                next.has(row.id) ? next.delete(row.id) : next.add(row.id);
+                return next;
+              })}
+            />
+          ))}
         </div>
       )}
     </div>

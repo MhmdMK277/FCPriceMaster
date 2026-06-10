@@ -21,6 +21,51 @@ Required fields per entry: date, session number, goal, done, next, gotchas, chan
 
 <!-- Entries go below this line, newest first -->
 
+### 2026-06-10 — session 31
+**Goal:** Ask UI polish (render error, cancel button, timing, history, Select all/Clear all, Mistral Vision gating); Recommendations multi-model badge + budget bar; migration 0010 for model_id.
+
+**Done:**
+- Fixed BUG 1: all `window.fcdb.*` calls in Ask.tsx now null-guarded via `isElectron` flag. Dev mode (browser without Electron) shows all providers as available with a yellow "dev mode" badge; no render errors.
+- Refactored Ask IPC into three handlers: `db:buildAskContext` (context only), `db:callSingleProvider` (one model + timing), `db:logAskMulti` (aggregate history row). Ask.tsx fires all providers in parallel; each verdict card appears as it resolves (incremental rendering).
+- Added AbortController cancel: Cancel button replaces Analyse during loading; pending providers switch to "cancelled" cards immediately; resolved results are preserved.
+- Per-model timing: `elapsed_ms` returned from `db:callSingleProvider`; shown as "X.Xs" in each verdict card.
+- Verdict cards redesigned: responsive 2-col grid, colored left border (NVIDIA green / Anthropic purple), confidence % in large text, timing + cost meta, "Show more" toggle at 120 chars, error cards with red border.
+- Select all / Clear all toggles above provider row. Select all includes text models only (not vision). Clear all + submit shows "Select at least one model" inline error.
+- Mistral Vision checkbox is always disabled unless an image is attached (cannot accidentally fire it on text-only queries). Auto-checks + note "Auto-selected for image analysis" on image attach. Unchecks + re-disables on Remove. Image button label shows filename once attached.
+- History fixed: every multi-model session logs one `ask_multi` row to `llm_calls`; `getLLMHistory` filters to `feature IN ('ask', 'ask_multi')`; History count shows number of `ask_multi` sessions; clicking a history row expands to show full verdict cards; verdict summary badges (N× BUY/HOLD/AVOID) shown inline.
+- Migration 0010: `recommendations.model_id TEXT DEFAULT 'claude-haiku-4-5-20251001'`. Applied to live DB.
+- `_insert_recommendation` in recommender.py accepts + stores `model_id`. `generate_recommendations` passes `call_model`; `_fodder_recommendations` same; `_futties_85_recommendation` uses `'structural'`.
+- Recommendation cards show colored model badge: green for NVIDIA models, purple for Claude Haiku, grey for Structural.
+- Recommendations budget bar shows "Model: [name] · Free (NVIDIA · 40 RPM)" when a free provider is selected.
+- Added `getModelDisplay()` helper in Recommendations.tsx mapping full model IDs to short labels + provider type.
+- Multi-verdict CSS added to App.css (was entirely missing): grid, card, header, confidence, reasoning, expand, footer, provider badges, disagree banner, toggle links.
+- All 21 IPC handlers registered in selftest. 149/149 tests pass. `pnpm build` clean. Classifier smoke test: 4/4 correct.
+
+**Next:** Visual sign-off pass by owner in the Electron app: Ask tab (image attach → vision auto-check, 3-model query, timing, cancel, history count), Recommendations tab (DeepSeek V4 Pro → Free budget bar + badge on generated card).
+
+**Gotchas:**
+- `db:callSingleProvider` for Haiku logs to `llm_calls` with `feature='ask'` (budget tracking). `db:logAskMulti` logs with `feature='ask_multi'` and `cost_usd=0` — no double-counting.
+- AbortController only signals the renderer; IPC calls in main.cjs still complete. Models that respond after cancel are silently discarded. For NVIDIA (free) this wastes nothing; a stray Haiku call will still complete and log its cost.
+- `model_id` in recommendations is the raw model string from the provider (e.g. `'deepseek-ai/deepseek-v4-pro'`); `getModelDisplay()` maps these to human-readable labels.
+- Old recommendations rows have `model_id = 'claude-haiku-4-5-20251001'` (the migration DEFAULT).
+
+**Changed files:**
+- `ARCHITECTURE.md`
+- `ROADMAP.md`
+- `SESSION_LOG.md`
+- `backend/src/db/migrations/0010_rec_model_id.sql` (new)
+- `backend/src/llm/recommender.py`
+- `frontend/electron/main.cjs`
+- `frontend/electron/preload.cjs`
+- `frontend/electron/db-queries.cjs`
+- `frontend/src/lib/types.ts`
+- `frontend/src/electron.d.ts`
+- `frontend/src/views/Ask.tsx`
+- `frontend/src/views/Recommendations.tsx`
+- `frontend/src/App.css`
+
+---
+
 ### 2026-06-09 — session 30
 **Goal:** Multi-model fixes, NVIDIA text/vision wiring, signal-context classifier, Discord vision parsing, Reddit hardening, verification, and GitHub push.
 
