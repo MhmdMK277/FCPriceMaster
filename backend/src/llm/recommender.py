@@ -31,6 +31,11 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Staleness guard: cards whose newest valid price is older than this, or with
+# fewer than MIN_SNAPSHOTS valid snapshots, never reach the LLM.
+STALE_THRESHOLD_HOURS = 24
+MIN_SNAPSHOTS = 3
+
 _AUTONOMOUS_SYSTEM_PROMPT = """You are FCPriceMaster, an EA FC Ultimate Team market analyst running autonomous market surveillance. You have been given data about a specific card and must decide whether it represents a trading opportunity RIGHT NOW.
 
 You are NOT evaluating a human's trade call. You are originating one.
@@ -56,6 +61,8 @@ FUTTIES rules (apply only when futties_active=True in the user message):
 If futties_days_until < 30: warn about approaching FUTTIES for any long-horizon recommendations.
 
 Signals tagged irl_transfer or irl_result are real-world football news, not FUT market data. A real-world transfer fee (e.g. €150M to Real Madrid) does NOT indicate a FUT card price. A high-profile IRL move may create mild in-game demand — treat as weak positive sentiment only, never as price evidence. Signals tagged promo_leak are high priority.
+
+CRITICAL INSTRUCTION: Every card's context includes a 'Last price' line showing when the price was recorded. If the price data is more than 6 hours old, flag it as potentially outdated. If it is more than 24 hours old, do NOT recommend buying or selling that card — instead say the data is too stale to act on. Never treat an old recorded price as a current market price.
 
 Respond in this exact JSON format:
 {
@@ -112,6 +119,41 @@ def _strip_fences(text: str) -> str:
         end = len(lines) - 1 if lines[-1].strip() == "```" else len(lines)
         return "\n".join(lines[start:end]).strip()
     return text
+
+
+def _passes_staleness_guard(con: sqlite3.Connection, card: dict[str, Any], platform: str) -> bool:
+    """A card may only become a candidate on data fresh enough to act on."""
+    row = con.execute(
+        """SELECT MAX(ts_utc) AS last_snap, COUNT(*) AS snap_count
+           FROM price_snapshots
+           WHERE card_id = ? AND platform = ? AND bin_price > 0""",
+        (card["card_id"], platform),
+    ).fetchone()
+    last_snap, snap_count = row[0], row[1]
+    label = f"{card['player_name']} {card['version_name']}"
+
+    if not last_snap:
+        logger.info("Staleness guard: %s — no price data, skipping", label)
+        return False
+
+    try:
+        ts = datetime.fromisoformat(last_snap.replace("Z", "+00:00"))
+        if ts.tzinfo is None:  # naive timestamps in the DB are UTC by convention
+            ts = ts.replace(tzinfo=timezone.utc)
+    except ValueError:
+        logger.info("Staleness guard: %s — unparseable timestamp %r, skipping", label, last_snap)
+        return False
+
+    hours_old = (datetime.now(timezone.utc) - ts).total_seconds() / 3600
+    if hours_old > STALE_THRESHOLD_HOURS:
+        logger.info("Staleness guard: %s — %.1fh old, skipping", label, hours_old)
+        return False
+
+    if snap_count < MIN_SNAPSHOTS:
+        logger.info("Staleness guard: %s — only %d snapshots, skipping", label, snap_count)
+        return False
+
+    return True
 
 
 def _get_candidates(con: sqlite3.Connection, platform: str, limit: int = 20) -> list[dict[str, Any]]:
@@ -256,7 +298,10 @@ def _get_candidates(con: sqlite3.Connection, platform: str, limit: int = 20) -> 
             "futties_85",
         )
 
-    return pool_a + pool_b + pool_c + pool_d
+    # Staleness guard runs on every pool — no card enters the candidate list
+    # (and therefore no LLM call happens) on stale or thin price data.
+    combined = pool_a + pool_b + pool_c + pool_d
+    return [c for c in combined if _passes_staleness_guard(con, c, platform)]
 
 
 def _get_price_momentum(con: sqlite3.Connection, card_id: int, platform: str) -> dict[str, Any]:
@@ -340,6 +385,13 @@ def _format_card_message(card: dict[str, Any], context: dict[str, Any], momentum
     lines.append(f"Platform: {context.get('platform', '?').upper()}")
     lines.append("")
     lines.append(f"Current price: {price_now:,}" if price_now else "Current price: N/A")
+    if c and price_now and c.get("data_age_hours") is not None:
+        lines.append(
+            f"Last price: {price_now:,} coins (recorded {c['data_age_hours']:.1f}h ago, "
+            f"{c.get('snapshot_count') or 0} data points)"
+        )
+    else:
+        lines.append("Last price: N/A (no recorded price data)")
     lines.append(f"24h ago: {price_24h:,}" if price_24h else "24h ago: N/A")
     lines.append(f"Momentum: {mom:+.1f}%" if mom is not None else "Momentum: N/A")
     if c:

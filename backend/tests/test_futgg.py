@@ -129,9 +129,11 @@ async def test_fetch_hot_cards_happy_path(tmp_db):
     - 2 price snapshots written
     - scraper_health row with success=1
     """
+    # Prices must follow the FUT increment ladder (100k+ → multiples of 1000),
+    # otherwise the scraper now classifies the card as untradeable (SBC estimate).
     cards_data = [
-        ("/players/188350-marco-reus/26-67297214/", "Reus - 93 - TOTS HM", "CAM\n93.0\n355.6K"),
-        ("/players/200104-heung-min-son/26-84086184/", "Son - 93 - TOTS", "LM\n93.1\n523.3K"),
+        ("/players/188350-marco-reus/26-67297214/", "Reus - 93 - TOTS HM", "CAM\n93.0\n356K"),
+        ("/players/200104-heung-min-son/26-84086184/", "Son - 93 - TOTS", "LM\n93.1\n523K"),
     ]
 
     scraper = FutGGScraper(db_path=tmp_db)
@@ -162,7 +164,7 @@ async def test_fetch_hot_cards_happy_path(tmp_db):
 
     assert len(result) == 2
     assert result[0]["card_key"] == "26-67297214"
-    assert result[1]["bin_price"] == 523300
+    assert result[1]["bin_price"] == 523000
 
     # Check DB
     con = sqlite3.connect(tmp_db)
@@ -233,3 +235,41 @@ async def test_schema_guard_error_raised_directly(tmp_db):
     scraper = FutGGScraper(db_path=tmp_db)
     with pytest.raises(SchemaGuardError, match="Missing fields"):
         scraper.validate({"card_key": "26-123", "player_name": "Test"})  # missing version_name, platform
+
+
+# ---------------------------------------------------------------------------
+# Session 35: untradeable detection helpers
+# ---------------------------------------------------------------------------
+
+from src.scrapers.futgg import _is_real_bin_price, _classify_tradeable  # noqa: E402
+
+
+@pytest.mark.parametrize("price,version,expected", [
+    (355000, "TOTS HM", True),        # 100k+ multiple of 1000
+    (355600, "TOTS HM", False),       # 100k+ not multiple of 1000 → SBC estimate
+    (47300, "TOTS", False),           # 10k-50k not multiple of 250
+    (47250, "TOTS", True),            # 10k-50k multiple of 250
+    (5500, "Gold Rare", True),        # 1k-10k multiple of 100
+    (5550, "Gold Rare", False),       # 1k-10k not multiple of 100
+    (850, "Common", True),            # under 1k multiple of 50
+    (875, "Common", False),           # under 1k not multiple of 50
+    (None, "TOTS", False),            # no price is never a real BIN
+    (0, "TOTS", False),
+    (-5, "TOTS", False),
+    (355000, "TOTS SBC", False),      # SBC version → never a market price
+    (355000, "Objectives Reward", False),
+    (355000, "Marquee Objective", False),
+])
+def test_is_real_bin_price(price, version, expected):
+    assert _is_real_bin_price(price, version) is expected
+
+
+@pytest.mark.parametrize("price,version,expected", [
+    (355000, "TOTS", 1),              # verified real BIN → tradeable
+    (355600, "TOTS", 0),              # invalid increment → untradeable evidence
+    (None, "TOTS", None),             # extinct/no price → no evidence either way
+    (None, "Player SBC", 0),          # SBC version → untradeable even without price
+    (355000, "Objectives", 0),        # Objectives version → untradeable
+])
+def test_classify_tradeable(price, version, expected):
+    assert _classify_tradeable(price, version) is expected

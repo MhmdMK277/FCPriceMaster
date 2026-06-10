@@ -368,3 +368,20 @@ DeepSeek V4 Pro cold-start measured at 67s (HTTP 200 eventually). Node side: `ca
 
 **gpt-oss-120b needs max_tokens=1500.**
 It is a reasoning model; with 500 tokens the hidden reasoning eats the budget and `content` comes back empty or truncated (observed live: recommender `non-JSON: {` failures). Both callers now send 1500 for gpt-oss and treat empty content as an explicit error instead of letting `JSON.parse('')` throw.
+
+## 2026-06-10 — session 35 Decisions
+
+**Untradeable detection: structural page difference, not version names.**
+FUT.GG shows untradeable (SBC/Objective reward) cards on list pages with a coin value that is the SBC cost estimate — the value of fodder sacrificed — not a market price, with no visual badge distinguishing them. The authoritative signal is on the card detail page: tradeable cards have a "Prices" nav tab and a Lowest BIN / Price Momentum section; untradeable cards have neither. `_page_is_tradeable()` checks for these in `fetch_card_prices` and flips `cards.tradeable` both ways (0 when absent, 1 when present). Version-name matching (`SBC`/`Objective(s)`) is kept only as a secondary guard — the audit found 0 cards in our DB carrying those version labels.
+
+**SBC cost estimate vs real BIN: FUT increment validation at scrape time.**
+Real BINs follow the EA price ladder (1k–10k: ×100; 10k–50k: ×250; 50k–100k: ×500; 100k+: ×1000). 103,240 of 590k stored snapshots (17.5%) violated it — all SBC estimates (e.g. Son TOTS HM 537,900). `_is_real_bin_price()` blocks these at every list-page scrape; failures mark the card untradeable immediately without a detail-page visit. `_classify_tradeable()` is deliberately three-state: an EXTINCT/priceless card yields None (no evidence) because tradeable cards can be extinct — only an invalid price or SBC version proves untradeable, only a valid price proves tradeable. Verified valid prices restore `tradeable=1`, so the migration's 30-day retirements self-heal as data flows.
+
+**Staleness guard: STALE_THRESHOLD_HOURS=24, MIN_SNAPSHOTS=3.**
+Applied inside `_get_candidates` (so the scheduler cron, HTTP trigger, and `_has_worthy_candidates` all share it), platform-scoped, against `bin_price > 0` snapshots only. Root cause being fixed: June 10 recommendations were generated on April snapshots (Bellingham TOTS buy with a 1,261-hour price lag). Belt-and-braces: the LLM context now carries a "Last price … recorded N.Nh ago, M data points" line and all three system prompts (ask.py, recommender.py, main.cjs) instruct the model to refuse to act on >24h-old prices.
+
+**Full sweep vs tier scraper: discovery vs freshness.**
+The daily `fetch_all_cards_paginated` jobs (06:00 UTC PC, 06:30 console; bands 78-81/82-84/85-87/88-90/91-93/94-99; ~30 cards/page, 3-6s jitter, stop on 2 consecutive empty pages or 50 pages) exist to *discover* every card — a single band (85-87 PC) held 1,061 cards where the DB previously had ~70. The 30-60min tier scraper keeps the first-page (cheapest) cards *fresh*. One health row per band (`futgg_sweep_{min}_{max}_{platform}`) keeps sweep failures visible per band.
+
+**Dismiss-with-reason as a feedback channel.**
+`recommendations.dismissed/dismissed_reason/dismissed_at` (migration 0012; `dismissed_at` predates it from 0006). "Wrong price data" dismissals double as a repair action: the renderer calls `db:requestFreshPrice`, which POSTs to the scheduler's new `/fetch-card` endpoint, queueing an immediate `fetch_card_prices` — which itself runs the detail-page tradeability check, so a wrongly-priced untradeable card gets permanently flagged on the spot. Reasons accumulate as labeled negatives for the Phase 4 classifier.

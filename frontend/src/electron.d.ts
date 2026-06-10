@@ -27,7 +27,8 @@ declare global {
       cancelSession(opts: { session_id: string }): Promise<{ cancelled: boolean }>;
       onProviderStatus(callback: (data: { session_id: string; provider_id: string; status: string; message: string }) => void): () => void;
       getRecommendations(opts?: { platform?: Platform; limit?: number; activeOnly?: boolean; showAll?: boolean }): Promise<unknown[]>;
-      dismissRecommendation(opts: { id: number }): Promise<void>;
+      dismissRecommendation(opts: { id: number; reason?: string | null }): Promise<void>;
+      requestFreshPrice(opts: { card_id?: number | null; card_key?: string | null; platform?: string }): Promise<{ status: string; error?: string }>;
       getRecommendationStats(opts?: { days?: number }): Promise<unknown>;
       triggerRecommendations(opts?: { platform?: Platform; provider_id?: string }): Promise<unknown>;
       getRecommendationBudgetStatus(): Promise<unknown>;

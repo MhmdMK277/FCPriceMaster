@@ -155,7 +155,7 @@ function buildAskContext(db, text, platform) {
     const name = card.player_name.toLowerCase();
     if (name.length >= 4 && textLower.includes(name)) {
       const price = db.prepare(
-        `SELECT bin_price FROM price_snapshots
+        `SELECT bin_price, ts_utc FROM price_snapshots
          WHERE card_id=? AND platform=? AND bin_price IS NOT NULL
          ORDER BY ts_utc DESC LIMIT 1`
       ).get(card.id, platform);
@@ -165,10 +165,22 @@ function buildAskContext(db, text, platform) {
            AND ts_utc <= datetime('now','-24 hours')
          ORDER BY ts_utc DESC LIMIT 1`
       ).get(card.id, platform);
+      const snapCount = db.prepare(
+        `SELECT COUNT(*) AS n FROM price_snapshots
+         WHERE card_id=? AND platform=? AND bin_price > 0`
+      ).get(card.id, platform);
+      let dataAgeHours = null;
+      if (price?.ts_utc) {
+        const parsed = new Date(price.ts_utc).getTime();
+        if (!isNaN(parsed)) dataAgeHours = (Date.now() - parsed) / 3600000;
+      }
       mentionedCards.push({
         ...card,
         current_price: price?.bin_price ?? null,
         price_24h_ago: price24h?.bin_price ?? null,
+        last_snapshot_ts: price?.ts_utc ?? null,
+        data_age_hours: dataAgeHours,
+        snapshot_count: snapCount?.n ?? 0,
       });
     }
   }
@@ -207,6 +219,11 @@ function formatUserMessage(context, tradeCallText) {
         ? ` | 24h: ${(((c.current_price - c.price_24h_ago) / c.price_24h_ago) * 100).toFixed(1)}%`
         : '';
       lines.push(`  - ${c.player_name} (${c.version_name}): ${price} coins${change}`);
+      if (c.current_price && c.data_age_hours !== null) {
+        lines.push(`    Last price: ${c.current_price.toLocaleString()} coins (recorded ${c.data_age_hours.toFixed(1)}h ago, ${c.snapshot_count} data points)`);
+      } else {
+        lines.push('    Last price: N/A (no recorded price data)');
+      }
     }
     lines.push('');
   }
@@ -246,6 +263,8 @@ Whether the reasoning in the call is sound given current market data
 Hold time vs risk
 
 Signals tagged irl_transfer or irl_result are real-world football news, not FUT market data. A real-world transfer fee (e.g. €150M to Real Madrid) does NOT indicate a FUT card price. A high-profile IRL move may create mild in-game demand — treat as weak positive sentiment only, never as price evidence. Signals tagged promo_leak are high priority.
+
+CRITICAL INSTRUCTION: Every card's context includes a 'Last price' line showing when the price was recorded. If the price data is more than 6 hours old, flag it as potentially outdated. If it is more than 24 hours old, do NOT recommend buying or selling that card — instead say the data is too stale to act on. Never treat an old recorded price as a current market price.
 
 Always respond in this exact JSON format:
 {
@@ -743,6 +762,23 @@ ipcMain.handle('db:triggerRecommendations', async (_e, { platform, provider_id }
   }
 });
 
+// Queue an immediate re-scrape of one card via the scheduler's HTTP trigger
+// (used by "Wrong price data" dismissals so the bad price is replaced fast).
+ipcMain.handle('db:requestFreshPrice', async (_e, { card_id, card_key, platform } = {}) => {
+  try {
+    const body = JSON.stringify({ card_id: card_id ?? null, card_key: card_key ?? null, platform: platform || 'pc' });
+    const res = await fetch('http://127.0.0.1:8765/fetch-card', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+    if (!res.ok) return { status: 'error', error: `HTTP ${res.status}` };
+    return await res.json();
+  } catch (e) {
+    return { status: 'error', error: e.message };
+  }
+});
+
 ipcMain.handle('db:askLLM', async (_e, { text, platform }) => {
   const apiKey = getAnthropicKey();
   if (!apiKey) {
@@ -843,6 +879,7 @@ if (isSelfTest) {
         'db:getRecommendationStats',
         'db:getRecommendationBudgetStatus',
         'db:triggerRecommendations',
+        'db:requestFreshPrice',
         'db:askLLM',
         'db:askMultiModel',
         'db:getProviderAvailability',

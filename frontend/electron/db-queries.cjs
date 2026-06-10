@@ -222,11 +222,11 @@ const GET_RECS_DEDUPED_SQL = `
     UNION ALL
     SELECT id, prior_count FROM fodder_all
   )
-  SELECT r.id,
+  SELECT r.id, r.card_id,
     COALESCE(c.player_name, r.reasoning) AS card_name,
     COALESCE(c.version_name, 'fodder')   AS version_name,
     r.platform, r.call, r.confidence, r.horizon_hours,
-    r.target_price, r.reasoning, r.ts_utc, r.dismissed_at,
+    r.target_price, r.reasoning, r.ts_utc, r.dismissed_at, r.dismissed_reason,
     o.verdict AS outcome_verdict,
     com.prior_count,
     COALESCE(r.model_id, 'claude-haiku-4-5-20251001') AS model_id
@@ -239,11 +239,11 @@ const GET_RECS_DEDUPED_SQL = `
 
 // showAll=true: every rec row, no grouping
 const GET_RECS_ALL_SQL = `
-  SELECT r.id,
+  SELECT r.id, r.card_id,
     COALESCE(c.player_name, r.reasoning) AS card_name,
     COALESCE(c.version_name, 'fodder')   AS version_name,
     r.platform, r.call, r.confidence, r.horizon_hours,
-    r.target_price, r.reasoning, r.ts_utc, r.dismissed_at,
+    r.target_price, r.reasoning, r.ts_utc, r.dismissed_at, r.dismissed_reason,
     o.verdict AS outcome_verdict,
     1 AS prior_count,
     COALESCE(r.model_id, 'claude-haiku-4-5-20251001') AS model_id
@@ -297,9 +297,13 @@ function getRecommendationBudgetStatus(db) {
   }
 }
 
-function dismissRecommendation(db, { id } = {}) {
+function dismissRecommendation(db, { id, reason = null } = {}) {
   try {
-    db.prepare(`UPDATE recommendations SET dismissed_at = datetime('now') WHERE id = ?`).run(id);
+    db.prepare(
+      `UPDATE recommendations
+       SET dismissed = 1, dismissed_reason = ?, dismissed_at = datetime('now')
+       WHERE id = ?`
+    ).run(reason, id);
     return { ok: true };
   } catch (e) { return { ok: false, error: e.message }; }
 }

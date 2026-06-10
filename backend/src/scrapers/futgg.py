@@ -28,6 +28,44 @@ Platform = Literal["pc", "console"]
 
 _FODDER_SOURCE = "futgg_fodder"
 
+# Rating bands for the daily full card sweep (fetch_all_cards_paginated)
+SWEEP_BANDS: list[tuple[int, int]] = [(78, 81), (82, 84), (85, 87), (88, 90), (91, 93), (94, 99)]
+
+# Shared list-page extraction (used by fetch_cards_by_rating and the paginated sweep).
+# Returns [{href, badgeText, alt, isUntradeable}] for up to maxExamine card anchors.
+_LIST_EXTRACT_JS = """(maxExamine) => {
+  var anchors = document.querySelectorAll('a[href*="/players/"][href*="/26-"]');
+  var results = [];
+  for (var i = 0; i < anchors.length && i < maxExamine; i++) {
+    var a = anchors[i];
+    var href = a.getAttribute('href') || '';
+
+    // Badge: .font-din contains "POS\\nRATING\\nPRICE"
+    var badge = a.querySelector('.font-din');
+    var badgeText = badge ? badge.innerText : '';
+
+    // Card image alt: "PlayerName - Rating - Version"
+    var imgs = a.querySelectorAll('img[alt]');
+    var alt = '';
+    for (var j = 0; j < imgs.length; j++) {
+      var a2 = imgs[j].getAttribute('alt') || '';
+      if (a2.indexOf(' - ') >= 0 && /\\d/.test(a2)) { alt = a2; break; }
+    }
+
+    // Untradeable detection: lock element or text
+    var isUntradeable = false;
+    var lockEl = a.querySelector('[class*="lock"],[data-tradeable="false"],[aria-label*="tradeable"],[aria-label*="Tradeable"]');
+    if (lockEl) isUntradeable = true;
+    if (!isUntradeable) {
+      var txt = a.innerText.toLowerCase();
+      if (txt.indexOf('non-tradeable') >= 0 || txt.indexOf('not tradeable') >= 0) isUntradeable = true;
+    }
+
+    results.push({href: href, badgeText: badgeText, alt: alt, isUntradeable: isUntradeable});
+  }
+  return results;
+}"""
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -100,6 +138,60 @@ def _is_valid_fut_price(price: int) -> bool:
     return price % 1000 == 0
 
 
+_UNTRADEABLE_VERSION_RE = re.compile(r"\b(SBC|Objectives?)\b", re.IGNORECASE)
+
+
+def _is_real_bin_price(price: int | None, version_name: str = "") -> bool:
+    """
+    True only if `price` can be a real transfer-market BIN.
+    Untradeable cards (SBC/Objective rewards) show their SBC cost estimate on
+    FUT.GG list pages — those values do not follow the FUT increment ladder.
+    """
+    if price is None or price <= 0:
+        return False
+    if version_name and _UNTRADEABLE_VERSION_RE.search(version_name):
+        return False
+    return _is_valid_fut_price(price)
+
+
+def _classify_tradeable(bin_price: int | None, version_name: str) -> int | None:
+    """
+    Classify a list-page card from its displayed price.
+      0    — untradeable evidence (SBC/Objective version, or price breaks the
+             FUT increment ladder → it's an SBC cost estimate, not a BIN)
+      1    — verified real BIN price → card provably trades
+      None — no evidence either way (EXTINCT / missing price; tradeable cards
+             can be extinct, so absence of a price never proves untradeable)
+    """
+    if version_name and _UNTRADEABLE_VERSION_RE.search(version_name):
+        return 0
+    if bin_price is None:
+        return None
+    return 1 if _is_real_bin_price(bin_price, version_name) else 0
+
+
+async def _page_is_tradeable(page: Any) -> bool:
+    """
+    Detail-page tradeability check (the authoritative signal on FUT.GG):
+    tradeable cards have a "Prices" nav tab and a Lowest BIN / Price Momentum
+    section; untradeable (SBC/Objective) cards have neither — the coin value
+    next to the card art is the SBC cost estimate.
+    Returns True on evaluation failure (never flip tradeable without evidence).
+    """
+    js = """() => {
+        const tabs = Array.from(document.querySelectorAll('a, button, [role="tab"]'));
+        const hasPricesTab = tabs.some(el => el.textContent?.trim() === 'Prices');
+        const hasLowestBin = !!document.querySelector(
+            '[class*="lowest-bin"], [class*="LowestBin"], [class*="price-momentum"], [class*="PriceMomentum"]'
+        );
+        return hasPricesTab || hasLowestBin;
+    }"""
+    try:
+        return bool(await page.evaluate(js))
+    except Exception:
+        return True
+
+
 def _card_key_from_href(href: str) -> str | None:
     """'/players/188350-marco-reus/26-67297214/' → '26-67297214'"""
     m = _HREF_RE.search(href)
@@ -137,15 +229,20 @@ def _upsert_card(
     card_key: str,
     player_name: str,
     version_name: str,
-    tradeable: int = 1,
+    tradeable: int | None = None,
 ) -> int:
-    """Insert card if not exists, return its id. If tradeable=0 and card exists, mark it non-tradeable."""
+    """Insert card if not exists, return its id.
+
+    tradeable=0 forces the flag off; tradeable=1 restores it (a verified real
+    BIN price proves the card trades, recovering cards the 30-day staleness
+    migration retired); None leaves an existing card's flag untouched.
+    """
     con.execute(
         "INSERT OR IGNORE INTO cards (card_key, player_name, version_name, game_edition, tradeable) VALUES (?,?,?,?,?)",
-        (card_key, player_name, version_name, "fc26", tradeable),
+        (card_key, player_name, version_name, "fc26", 1 if tradeable is None else tradeable),
     )
-    if tradeable == 0:
-        con.execute("UPDATE cards SET tradeable=0 WHERE card_key=?", (card_key,))
+    if tradeable is not None:
+        con.execute("UPDATE cards SET tradeable=? WHERE card_key=?", (tradeable, card_key))
     row = con.execute("SELECT id FROM cards WHERE card_key=?", (card_key,)).fetchone()
     return row[0]
 
@@ -251,13 +348,21 @@ class FutGGScraper(PlaywrightScraperBase):
                         logger.warning("Schema guard: %s for %s", exc, href)
                         continue
 
-                    card_id = _upsert_card(con, card_key, player_name, version_name)
+                    tradeable_flag = _classify_tradeable(bin_price, version_name)
+                    card_id = _upsert_card(con, card_key, player_name, version_name, tradeable=tradeable_flag)
                     attrs: dict[str, str] = {}
                     if position:
                         attrs["position"] = position
                     if rating is not None:
                         attrs["rating"] = str(rating)
                     _upsert_attributes(con, card_id, attrs)
+                    if tradeable_flag == 0:
+                        # SBC cost estimate or SBC/Objective version — not a market price
+                        logger.debug(
+                            "fetch_hot_cards: %s (%s) marked untradeable — price %s is not a real BIN",
+                            player_name, version_name, bin_price,
+                        )
+                        continue
                     _insert_snapshot(con, card_id, platform, bin_price)
                     results.append(card_data)
 
@@ -333,39 +438,7 @@ class FutGGScraper(PlaywrightScraperBase):
             # Many cards on FUT.GG sorted pages are EXTINCT or non-tradeable evolutions so we
             # over-fetch and discard those without a valid numeric price.
             max_examine = min(limit * 5, 500)
-            js = """(maxExamine) => {
-  var anchors = document.querySelectorAll('a[href*="/players/"][href*="/26-"]');
-  var results = [];
-  for (var i = 0; i < anchors.length && i < maxExamine; i++) {
-    var a = anchors[i];
-    var href = a.getAttribute('href') || '';
-
-    // Badge: .font-din contains "POS\\nRATING\\nPRICE"
-    var badge = a.querySelector('.font-din');
-    var badgeText = badge ? badge.innerText : '';
-
-    // Card image alt: "PlayerName - Rating - Version"
-    var imgs = a.querySelectorAll('img[alt]');
-    var alt = '';
-    for (var j = 0; j < imgs.length; j++) {
-      var a2 = imgs[j].getAttribute('alt') || '';
-      if (a2.indexOf(' - ') >= 0 && /\\d/.test(a2)) { alt = a2; break; }
-    }
-
-    // Untradeable detection: lock element or text
-    var isUntradeable = false;
-    var lockEl = a.querySelector('[class*="lock"],[data-tradeable="false"],[aria-label*="tradeable"],[aria-label*="Tradeable"]');
-    if (lockEl) isUntradeable = true;
-    if (!isUntradeable) {
-      var txt = a.innerText.toLowerCase();
-      if (txt.indexOf('non-tradeable') >= 0 || txt.indexOf('not tradeable') >= 0) isUntradeable = true;
-    }
-
-    results.push({href: href, badgeText: badgeText, alt: alt, isUntradeable: isUntradeable});
-  }
-  return results;
-}"""
-            raw_cards: list[dict] = await page.evaluate(js, max_examine)
+            raw_cards: list[dict] = await page.evaluate(_LIST_EXTRACT_JS, max_examine)
 
             if not raw_cards:
                 logger.warning(
@@ -397,8 +470,9 @@ class FutGGScraper(PlaywrightScraperBase):
 
                     is_untradeable = bool(raw.get("isUntradeable", False))
 
-                    # Cards with no price and no explicit untradeable indicator: skip snapshot
-                    tradeable_flag = 0 if is_untradeable else 1
+                    # Combine the JS lock-icon flag with price-based classification:
+                    # an invalid-increment price is an SBC cost estimate → untradeable.
+                    tradeable_flag = 0 if is_untradeable else _classify_tradeable(bin_price, version_name)
 
                     card_id = _upsert_card(con, card_key, player_name, version_name, tradeable=tradeable_flag)
 
@@ -409,7 +483,7 @@ class FutGGScraper(PlaywrightScraperBase):
                         attrs["rating"] = str(int(rating_f))
                     _upsert_attributes(con, card_id, attrs)
 
-                    if tradeable_flag and bin_price is not None and _is_valid_fut_price(bin_price):
+                    if tradeable_flag == 1:
                         con.execute(
                             """INSERT INTO price_snapshots
                                (card_id, platform, game_edition, ts_utc, bin_price, source)
@@ -434,6 +508,113 @@ class FutGGScraper(PlaywrightScraperBase):
                 "fetch_cards_by_rating(%d-%d, %s): %d tradeable cards persisted",
                 rating_min, rating_max, platform, len(results),
             )
+            return results
+
+        except Exception as exc:
+            _write_health(self.db_path, source, success=False, error_text=str(exc))
+            raise
+        finally:
+            await page.close()
+
+    async def fetch_all_cards_paginated(
+        self,
+        platform: Platform,
+        min_rating: int,
+        max_rating: int,
+    ) -> dict[str, int]:
+        """
+        Page through ALL cards in a rating band on FUT.GG /players/ (daily full
+        sweep — discovers cards the tier scraper's first-page limit never sees).
+        Returns {found, new, updated, skipped_untradeable}.
+
+        Only stores snapshots for cards passing _is_real_bin_price().
+        Rate limit: 3-6s jitter between pages. Stops after two consecutive
+        empty pages or 50 pages (safety limit).
+        """
+        import random
+
+        source = f"futgg_sweep_{min_rating}_{max_rating}_{platform}"
+        plat_param = "pc" if platform == "pc" else "console"
+        results = {"found": 0, "new": 0, "updated": 0, "skipped_untradeable": 0}
+        seen_keys: set[str] = set()
+        page_num = 1
+        consecutive_empty = 0
+
+        page = await self._new_page()
+        try:
+            con = sqlite3.connect(self.db_path)
+            while page_num <= 50 and consecutive_empty < 2:
+                url = (
+                    f"https://www.fut.gg/players/"
+                    f"?overall__gte={min_rating}&overall__lte={max_rating}"
+                    f"&sorts=current_price&platform={plat_param}&page={page_num}"
+                )
+                await self._navigate(page, url)
+                try:
+                    await page.wait_for_selector('a[href*="/players/"][href*="/26-"]', timeout=30000)
+                except Exception:
+                    pass
+
+                raw_cards: list[dict] = await page.evaluate(_LIST_EXTRACT_JS, 500)
+                page_found = 0
+                ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+                with con:
+                    for raw in raw_cards:
+                        card_key = _card_key_from_href(raw.get("href", ""))
+                        if not card_key or card_key in seen_keys:
+                            continue
+                        seen_keys.add(card_key)
+                        page_found += 1
+
+                        position, rating_f, bin_price = _parse_badge(raw.get("badgeText", ""))
+                        alt = raw.get("alt", "")
+                        player_name, version_name = _player_name_from_alt(alt) if alt else ("Unknown", "Unknown")
+
+                        is_new = con.execute(
+                            "SELECT 1 FROM cards WHERE card_key=?", (card_key,)
+                        ).fetchone() is None
+
+                        tradeable_flag = (
+                            0 if raw.get("isUntradeable")
+                            else _classify_tradeable(bin_price, version_name)
+                        )
+                        card_id = _upsert_card(con, card_key, player_name, version_name, tradeable=tradeable_flag)
+
+                        attrs: dict[str, str] = {}
+                        if position:
+                            attrs["position"] = position
+                        if rating_f is not None:
+                            attrs["rating"] = str(int(rating_f))
+                        _upsert_attributes(con, card_id, attrs)
+
+                        if is_new:
+                            results["new"] += 1
+                        if tradeable_flag == 0:
+                            results["skipped_untradeable"] += 1
+                        elif tradeable_flag == 1:
+                            con.execute(
+                                """INSERT INTO price_snapshots
+                                   (card_id, platform, game_edition, ts_utc, bin_price, source)
+                                   VALUES (?,?,?,?,?,?)""",
+                                (card_id, platform, "fc26", ts, bin_price, "futgg_sweep"),
+                            )
+                            results["updated"] += 1
+
+                results["found"] += page_found
+                if page_found == 0:
+                    consecutive_empty += 1
+                else:
+                    consecutive_empty = 0
+                logger.info(
+                    "fetch_all_cards_paginated(%d-%d, %s): page %d — %d cards (totals: %s)",
+                    min_rating, max_rating, platform, page_num, page_found, results,
+                )
+                page_num += 1
+                if page_num <= 50 and consecutive_empty < 2:
+                    await asyncio.sleep(random.uniform(3, 6))
+
+            _write_health(self.db_path, source, success=True, records_written=results["updated"])
             return results
 
         except Exception as exc:
@@ -885,19 +1066,39 @@ class FutGGScraper(PlaywrightScraperBase):
             full_url = f"https://www.fut.gg{href}"
             await self._navigate(page, full_url)
 
+            # Authoritative tradeability check: untradeable cards have no Prices
+            # tab / Price Momentum section — their coin value is an SBC estimate.
+            if not await _page_is_tradeable(page):
+                logger.info(
+                    "fetch_card_prices: %s (%s) has no Prices tab — marking untradeable, no snapshot",
+                    player_name, version_name,
+                )
+                con = sqlite3.connect(self.db_path)
+                with con:
+                    con.execute("UPDATE cards SET tradeable=0 WHERE id=?", (card_id,))
+                _write_health(self.db_path, self.SOURCE, success=True, records_written=0)
+                return {"card_key": card_key, "platform": platform, "bin_price": None, "tradeable": 0}
+
             # Get main card price badge (first .fc-card-container .font-din)
             badge_el = page.locator(".fc-card-container .font-din").first
             await badge_el.wait_for(timeout=10000)
             badge_text = await badge_el.inner_text()
             _, _, bin_price = _parse_badge(badge_text)
 
+            if bin_price is not None and not _is_real_bin_price(bin_price, version_name):
+                logger.warning(
+                    "fetch_card_prices: %s (%s) price %s fails FUT increment rules — snapshot skipped",
+                    player_name, version_name, bin_price,
+                )
+                bin_price = None
+
             con = sqlite3.connect(self.db_path)
             with con:
-                db_row = con.execute("SELECT id FROM cards WHERE card_key=?", (card_key,)).fetchone()
-                if db_row:
-                    _insert_snapshot(con, db_row[0], platform, bin_price)
+                # Page has a Prices tab → card provably trades; restore the flag.
+                con.execute("UPDATE cards SET tradeable=1 WHERE id=?", (card_id,))
+                _insert_snapshot(con, card_id, platform, bin_price)
 
-            result = {"card_key": card_key, "platform": platform, "bin_price": bin_price}
+            result = {"card_key": card_key, "platform": platform, "bin_price": bin_price, "tradeable": 1}
             _write_health(self.db_path, self.SOURCE, success=True, records_written=1)
             return result
 
@@ -906,6 +1107,22 @@ class FutGGScraper(PlaywrightScraperBase):
             raise
         finally:
             await page.close()
+
+
+# ---------------------------------------------------------------------------
+# Standalone sweep entry (opens its own browser; scheduler uses the method
+# on its shared scraper instead)
+# ---------------------------------------------------------------------------
+
+async def fetch_all_cards_paginated(
+    platform: str,
+    min_rating: int,
+    max_rating: int,
+    db_path: str,
+) -> dict[str, int]:
+    """Module-level wrapper for manual/test runs of the paginated sweep."""
+    async with FutGGScraper(db_path=db_path) as scraper:
+        return await scraper.fetch_all_cards_paginated(platform, min_rating, max_rating)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

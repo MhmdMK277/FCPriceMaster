@@ -99,10 +99,21 @@ def test_get_candidates_empty(db_with_cards):
     assert result == []
 
 
-def test_get_candidates_pool_b_with_two_snapshots(db_with_cards):
-    """Pool B (7d low) picks up a card with 2 snapshots at a stable price."""
+def test_get_candidates_two_snapshots_blocked_by_staleness_guard(db_with_cards):
+    """Session 35: cards with fewer than MIN_SNAPSHOTS (3) valid snapshots never
+    become candidates, even if Pool B (7d low) would otherwise pick them up."""
     card_id = sqlite3.connect(db_with_cards).execute("SELECT id FROM cards LIMIT 1").fetchone()[0]
-    _add_snapshots(db_with_cards, card_id, "pc", 2)  # 2 snapshots at flat price
+    _add_snapshots(db_with_cards, card_id, "pc", 2)  # 2 snapshots — below MIN_SNAPSHOTS
+    con = sqlite3.connect(db_with_cards)
+    result = _get_candidates(con, "pc")
+    con.close()
+    assert result == []
+
+
+def test_get_candidates_pool_b_with_three_snapshots(db_with_cards):
+    """Pool B (7d low) picks up a card with 3 fresh snapshots at a stable price."""
+    card_id = sqlite3.connect(db_with_cards).execute("SELECT id FROM cards LIMIT 1").fetchone()[0]
+    _add_snapshots(db_with_cards, card_id, "pc", 3)  # 3 snapshots at flat price
     con = sqlite3.connect(db_with_cards)
     result = _get_candidates(con, "pc")
     con.close()
@@ -110,6 +121,24 @@ def test_get_candidates_pool_b_with_two_snapshots(db_with_cards):
     assert len(result) == 1
     assert result[0]["card_id"] == card_id
     assert result[0]["_pool"] == "7d_low"
+
+
+def test_staleness_guard_blocks_old_data(db_with_cards):
+    """Session 35: cards whose newest snapshot is older than STALE_THRESHOLD_HOURS
+    are filtered out of candidate selection entirely."""
+    card_id = sqlite3.connect(db_with_cards).execute("SELECT id FROM cards LIMIT 1").fetchone()[0]
+    con = sqlite3.connect(db_with_cards)
+    now = datetime.now(timezone.utc)
+    for i in range(4):  # 4 snapshots, all 2+ days old
+        ts = (now - timedelta(hours=50 + i * 6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        con.execute(
+            "INSERT INTO price_snapshots (card_id, platform, ts_utc, bin_price, source, game_edition) VALUES (?,?,?,?,?,?)",
+            (card_id, "pc", ts, 100000, "futgg", "fc26"),
+        )
+    con.commit()
+    result = _get_candidates(con, "pc")
+    con.close()
+    assert result == []
 
 
 def test_get_candidates_pool_c_requires_three_snapshots(db_with_cards):

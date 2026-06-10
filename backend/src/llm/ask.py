@@ -68,6 +68,8 @@ If futties_days_until < 30: warn about approaching FUTTIES for any long-horizon 
 
 Signals tagged irl_transfer or irl_result are real-world football news, not FUT market data. A real-world transfer fee (e.g. €150M to Real Madrid) does NOT indicate a FUT card price. A high-profile IRL move may create mild in-game demand — treat as weak positive sentiment only, never as price evidence. Signals tagged promo_leak are high priority.
 
+CRITICAL INSTRUCTION: Every card's context includes a 'Last price' line showing when the price was recorded. If the price data is more than 6 hours old, flag it as potentially outdated. If it is more than 24 hours old, do NOT recommend buying or selling that card — instead say the data is too stale to act on. Never treat an old recorded price as a current market price.
+
 Always respond in this exact JSON format:
 {
   "verdict": "buy" | "hold" | "avoid",
@@ -198,6 +200,14 @@ def _format_user_message(context: dict[str, Any], trade_call: str) -> str:
                 f"{price_str} coins | 24h: {change_str} | trend: {c.get('trend', 'unknown')} | "
                 f"7d range: {c.get('week_low') or 'N/A'}-{c.get('week_high') or 'N/A'}"
             )
+            age = c.get("data_age_hours")
+            count = c.get("snapshot_count") or 0
+            if price is not None and age is not None:
+                lines.append(
+                    f"    Last price: {price:,} coins (recorded {age:.1f}h ago, {count} data points)"
+                )
+            else:
+                lines.append("    Last price: N/A (no recorded price data)")
         lines.append("")
 
     fodder = context.get("fodder_context", [])

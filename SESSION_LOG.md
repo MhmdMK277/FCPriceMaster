@@ -21,6 +21,48 @@ Required fields per entry: date, session number, goal, done, next, gotchas, chan
 
 <!-- Entries go below this line, newest first -->
 
+### 2026-06-10 — session 35
+**Goal:** Data quality overhaul — staleness guard, untradeable detection, full card sweep. Root cause: recommendations were being generated on April price data, and untradeable SBC cards (Son TOTS HM etc.) had their SBC cost estimates stored as market prices.
+
+**Done:**
+- **Full data audit (before any changes):** 668/788 tradeable cards >24h stale (499 >7d, 217 >30d); 103,240 of 590k snapshots violated FUT increment rules (= SBC cost estimates, not BINs); June 10 recommendations had price lags up to 1,261h (Bellingham TOTS buy on seed data from April 18); all 1,148 cards were tradeable=1 — untradeable detection had never fired; 0 cards matched `%SBC%`/`%Objective%` version names (FUT.GG uses "TOTS HM" etc., so version-name matching alone is insufficient).
+- **Migration 0011 (data_quality):** version-name untradeable rule (0 rows — kept as forward guard); deleted 103,240 invalid-increment snapshots; marked 635 cards untradeable for having no valid BIN in 30 days (1,148 → 513 tradeable at migration time). Delete runs BEFORE the 30-day rule so SBC-estimate-only cards get caught.
+- **Migration 0012 (recommendation_metadata):** added `dismissed`, `dismissed_reason` (NOTE: `dismissed_at` already existed from 0006 — prompt assumed it didn't); backfilled flag.
+- **Scraper (futgg.py):** `_is_real_bin_price()` (increment ladder + SBC/Objective version regex); `_classify_tradeable()` three-state (0 = untradeable evidence / 1 = verified BIN / None = extinct, no evidence); `_page_is_tradeable()` detail-page check (Prices tab / Price Momentum presence) wired into `fetch_card_prices` — flips tradeable=0 + skips snapshot when absent, restores tradeable=1 when present; `fetch_hot_cards` + `fetch_cards_by_rating` now classify on every extracted price; `_upsert_card` gained restore semantics (tradeable=1 on verified BIN) so the 30-day migration's false positives self-heal.
+- **Recommender staleness guard:** `STALE_THRESHOLD_HOURS=24`, `MIN_SNAPSHOTS=3` filtering inside `_get_candidates` (covers scheduler + HTTP trigger paths), platform-scoped. Verified live: skipped Reach (229.9h), Messi (112.4h), Luna (147.9h) — the exact cards behind the bad recs — passed 10 fresh candidates.
+- **Data age to LLM:** `_price_context` returns `last_snapshot_ts`/`data_age_hours`/`snapshot_count`; "Last price: X coins (recorded N.Nh ago, M data points)" line in ask.py, recommender.py, AND main.cjs (the Node path the Ask UI actually uses); CRITICAL INSTRUCTION stale-data paragraph added to all three system prompts.
+- **Full card sweep:** `fetch_all_cards_paginated()` pages through `/players/?page=N` per band (3-6s jitter, 50-page cap, stops on 2 consecutive empty pages); scheduler jobs `full_card_sweep_pc` 06:00 UTC, `full_card_sweep_console` 06:30 UTC over bands 78-81/82-84/85-87/88-90/91-93/94-99 with per-band scraper_health rows (`futgg_sweep_{min}_{max}_{platform}`). Live test (85-87 PC): found 1,061 / new 901 / snapshots 735 / skipped_untradeable 188 across 36 pages.
+- **Dismiss with reason:** Dismiss button → inline dropdown (Wrong price data / Card is untradeable / Already own this / Bad call / Other); stores reason + flag + timestamp; "Wrong price data" also fires `db:requestFreshPrice` → new `POST /fetch-card` endpoint on the scheduler HTTP server → queues immediate `fetch_card_prices` re-scrape (which itself runs the detail-page tradeability check).
+- **Tests: 170/170 passing** (required ≥149). 2 datetime naive/aware bugs found by tests and fixed; 2 tests updated to the new intended behavior (mock prices made increment-valid; pool-B 2-snapshot case now correctly blocked by the guard); 19 new parametrized tests for `_is_real_bin_price`/`_classify_tradeable` + 2 staleness-guard tests. `tsc --noEmit` clean, all `.cjs` syntax-checked.
+- DB after session: 2,049 cards (sweep test added ~900), 1,286 tradeable, 487,601 snapshots, 0 invalid-increment rows.
+
+**Next:** RESTART THE APP (close Electron, relaunch dev.ps1) — the scheduler running since 03:44 still has pre-session-35 code and kept writing ~5-18 invalid snapshots/hour until I purged them at session end. After restart: tonight's 06:00/06:30 UTC sweeps populate both platforms; then owner visual pass on the dismiss-reason dropdown. Anthropic credits still $0 (recs only work via NVIDIA providers).
+
+**Gotchas:**
+- The owner's Electron app + scheduler were live the whole session — every DB number drifted between queries, and the old scheduler re-inserted invalid snapshots AFTER migration 0011 ran (purged twice; final purge at session end). New scraper code only takes effect on restart.
+- `recommendations` schema differs from the session prompt's assumptions: columns are `call`/`ts_utc` (not `action`/`recommended_at`) and `dismissed_at` already existed — migration 0012 only adds the two missing columns.
+- Naive vs aware datetimes: `datetime.fromisoformat()` on DB timestamps without `Z` returns naive datetimes; subtracting from `datetime.now(timezone.utc)` raises TypeError. Both new parsers normalize naive → UTC.
+- EXTINCT cards must NOT be marked untradeable (tradeable cards can be temporarily extinct) — hence the three-state `_classify_tradeable` instead of the binary check the prompt sketched.
+- An SBC estimate can randomly land on a valid increment (~1/10 above 100k) and briefly restore tradeable=1 with one snapshot — MIN_SNAPSHOTS=3 plus the detail-page check on re-scrape contain this.
+- FUT.GG /players/ pagination serves ~30 cards/page and pages beyond the data return 0 anchors; 85-87 band alone is 36 pages, so a full 6-band sweep takes ~25-40 min/platform at 3-6s jitter.
+
+**Changed files:**
+- `backend/src/db/migrations/0011_data_quality.sql` (new)
+- `backend/src/db/migrations/0012_recommendation_metadata.sql` (new)
+- `backend/src/scrapers/futgg.py` (_is_real_bin_price, _classify_tradeable, _page_is_tradeable, _upsert_card restore semantics, list-page enforcement, fetch_all_cards_paginated + module wrapper, shared _LIST_EXTRACT_JS, SWEEP_BANDS)
+- `backend/src/workers/scheduler.py` (job_full_card_sweep + 2 cron jobs, POST /fetch-card endpoint, scraper passed to trigger server)
+- `backend/src/llm/recommender.py` (STALE_THRESHOLD_HOURS/MIN_SNAPSHOTS, _passes_staleness_guard in _get_candidates, Last price line, stale-data prompt paragraph)
+- `backend/src/llm/context_builder.py` (last_snapshot_ts/data_age_hours/snapshot_count in _price_context)
+- `backend/src/llm/ask.py` (Last price line, stale-data prompt paragraph)
+- `backend/tests/test_futgg.py` (increment-valid mock prices, 19 new helper tests)
+- `backend/tests/test_recommender.py` (guard-aware pool-B tests, 2 new staleness tests)
+- `frontend/electron/main.cjs` (db:requestFreshPrice, data age in buildAskContext/formatUserMessage, stale-data prompt paragraph, selftest list)
+- `frontend/electron/db-queries.cjs` (card_id + dismissed_reason in rec queries, dismiss with reason)
+- `frontend/electron/preload.cjs` (requestFreshPrice)
+- `frontend/src/electron.d.ts` (requestFreshPrice, dismiss reason types)
+- `frontend/src/views/Recommendations.tsx` (dismiss-reason dropdown, requestFreshPrice on wrong-price, dismissed-reason display)
+- `ROADMAP.md`, `ARCHITECTURE.md`, `SESSION_LOG.md` (this entry)
+
 ### 2026-06-10 — session 34
 **Goal:** Kill orphan workers, fix double-spawn (Session 33 root causes), add NVIDIA timeouts + cold-start UX, handle gpt-oss empty responses.
 

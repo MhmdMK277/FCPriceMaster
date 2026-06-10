@@ -197,6 +197,41 @@ async def job_tier_scrape(
         )
 
 
+async def job_full_card_sweep(scraper: FutGGScraper, platform: str) -> None:
+    """
+    Daily full pagination sweep over all rating bands. Discovers every card on
+    FUT.GG in the band (the tier scraper only refreshes first-page cards).
+    Each band writes its own scraper_health row (futgg_sweep_{min}_{max}_{platform}).
+    """
+    from src.scrapers.futgg import SWEEP_BANDS
+
+    start = datetime.now(timezone.utc)
+    logger.info("JOB START  full_card_sweep_%s (%d bands)", platform, len(SWEEP_BANDS))
+    totals = {"found": 0, "new": 0, "updated": 0, "skipped_untradeable": 0}
+    for band_min, band_max in SWEEP_BANDS:
+        try:
+            r = await scraper.fetch_all_cards_paginated(platform, band_min, band_max)  # type: ignore[arg-type]
+            for k in totals:
+                totals[k] += r.get(k, 0)
+            logger.info(
+                "  sweep band %d-%d (%s): found=%d new=%d updated=%d skipped_untradeable=%d",
+                band_min, band_max, platform,
+                r["found"], r["new"], r["updated"], r["skipped_untradeable"],
+            )
+        except Exception as exc:
+            logger.error(
+                "  sweep band %d-%d (%s) FAILED — %s: %s",
+                band_min, band_max, platform, type(exc).__name__, exc,
+            )
+        await asyncio.sleep(10)
+    elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+    logger.info(
+        "JOB DONE   full_card_sweep_%s — found=%d new=%d updated=%d skipped_untradeable=%d in %.1fs",
+        platform, totals["found"], totals["new"], totals["updated"],
+        totals["skipped_untradeable"], elapsed,
+    )
+
+
 async def job_prune_health(db_path: str) -> None:
     """Delete scraper_health rows older than 30 days."""
     try:
@@ -405,6 +440,28 @@ def build_scheduler(
         max_instances=1,
     )
 
+    # Daily full card sweep — paginates every rating band, both platforms
+    scheduler.add_job(
+        job_full_card_sweep,
+        trigger=CronTrigger(hour=6, minute=0, timezone="UTC"),
+        args=[scraper, "pc"],
+        id="full_card_sweep_pc",
+        name="Full card sweep (all bands) — PC",
+        misfire_grace_time=3600,
+        coalesce=True,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        job_full_card_sweep,
+        trigger=CronTrigger(hour=6, minute=30, timezone="UTC"),
+        args=[scraper, "console"],
+        id="full_card_sweep_console",
+        name="Full card sweep (all bands) — Console",
+        misfire_grace_time=3600,
+        coalesce=True,
+        max_instances=1,
+    )
+
     # Tier 4: 78-81 rated, top 50, every 4 hours — cheap SBC fodder
     scheduler.add_job(
         job_tier_scrape,
@@ -425,8 +482,9 @@ def build_scheduler(
 # Main
 # ---------------------------------------------------------------------------
 
-async def _http_trigger_server(db_path: str) -> None:
-    """Minimal asyncio HTTP server on port 8765 for UI-triggered recommendation runs."""
+async def _http_trigger_server(db_path: str, scraper: FutGGScraper | None = None) -> None:
+    """Minimal asyncio HTTP server on port 8765 for UI-triggered recommendation runs
+    and on-demand card re-scrapes (POST /fetch-card)."""
 
     async def _run_recs_with_result(platform: str, db_path: str, provider_id: str = "haiku") -> dict:
         """Run recommendations, returning {status, skipped, reason, recs_added}."""
@@ -466,6 +524,38 @@ async def _http_trigger_server(db_path: str) -> None:
                     pass
                 logger.info("HTTP trigger: run-recommendations for %s via %s", platform, provider_id)
                 result = await _run_recs_with_result(platform, db_path, provider_id)
+                resp_body = _json.dumps(result).encode("utf-8")
+                header = (
+                    f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                    f"Access-Control-Allow-Origin: *\r\nContent-Length: {len(resp_body)}\r\n\r\n"
+                ).encode("utf-8")
+                resp = header + resp_body
+            elif "POST /fetch-card" in first_line:
+                body_start = data.find(b"\r\n\r\n")
+                body = data[body_start + 4:].decode("utf-8", errors="replace") if body_start >= 0 else ""
+                result = {"status": "error", "error": "bad request"}
+                try:
+                    payload = _json.loads(body)
+                    platform = payload.get("platform", "pc")
+                    card_key = payload.get("card_key")
+                    if not card_key and payload.get("card_id") is not None:
+                        con = sqlite3.connect(db_path)
+                        row = con.execute(
+                            "SELECT card_key FROM cards WHERE id=?", (payload["card_id"],)
+                        ).fetchone()
+                        con.close()
+                        card_key = row[0] if row else None
+                    if not card_key:
+                        result = {"status": "error", "error": "card not found"}
+                    elif scraper is None:
+                        result = {"status": "error", "error": "scraper not available"}
+                    else:
+                        # Fire-and-forget: the scrape takes ~10s; don't block the UI.
+                        logger.info("HTTP trigger: fetch-card %s (%s)", card_key, platform)
+                        asyncio.create_task(scraper.fetch_card_prices(card_key, platform))
+                        result = {"status": "queued", "card_key": card_key, "platform": platform}
+                except Exception as exc2:
+                    result = {"status": "error", "error": str(exc2)}
                 resp_body = _json.dumps(result).encode("utf-8")
                 header = (
                     f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
@@ -527,7 +617,7 @@ async def run(db_path: str = _DB_PATH) -> None:
 
     scheduler = build_scheduler(scraper, db_path)
     scheduler.start()
-    asyncio.create_task(_http_trigger_server(db_path))
+    asyncio.create_task(_http_trigger_server(db_path, scraper))
 
     for job in scheduler.get_jobs():
         logger.info("  registered: %-40s next=%s", job.name, job.next_run_time)

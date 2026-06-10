@@ -171,7 +171,12 @@ Update status at the end of every session. Do not skip ahead — finish the curr
 - [x] **Session 30:** Signal context classifier — migration 0008 adds `signals.signal_context`; rule-based classifier tags `fut_market`, `irl_transfer`, `irl_result`, `promo_leak`; LLM prompts/context now distinguish IRL news from FUT market evidence; Signals view renders colored badges.
 - [x] **Session 30:** Discord image parsing — migration 0009 adds `signal_attachments.vision_extracted`; Discord worker processes max 1 image/message with Mistral Vision, appends extracted card info to signal text, then triggers card tagging.
 - [x] **Session 30:** Reddit hardening — explicit root `.env` OAuth load, one clean disabled health row when creds are absent, OAuth user-agent from `REDDIT_USERNAME`, and per-session missing/private subreddit skip after `/about.json` check.
-- [ ] Walk through UI with owner sign-off (Phase 3 + multi-model Ask)
+- [x] **Session 35:** Data quality overhaul — migration 0011 purged 103,240 SBC-cost-estimate snapshots (FUT increment validation) and retired 635 cards with no valid BIN in 30 days; `_is_real_bin_price`/`_classify_tradeable` block estimates at scrape time; `_page_is_tradeable` detail-page check (Prices tab / Price Momentum absence) flips tradeable=0 authoritatively.
+- [x] **Session 35:** Recommender staleness guard — `STALE_THRESHOLD_HOURS=24`, `MIN_SNAPSHOTS=3` in `_get_candidates`; verified live skipping the exact stale cards (Reach 230h, Messi 112h, Luna 148h) behind the bad June 10 recommendations.
+- [x] **Session 35:** Data age in LLM context — "Last price … recorded N.Nh ago, M data points" in ask.py/recommender.py/main.cjs + stale-data CRITICAL INSTRUCTION in all three system prompts.
+- [x] **Session 35:** Daily full card sweep — `fetch_all_cards_paginated` over 6 rating bands; scheduler jobs 06:00/06:30 UTC; live test on 85-87 PC: 1,061 found / 901 new / 735 snapshots / 188 untradeable skipped.
+- [x] **Session 35:** Dismiss with reason — migration 0012, dropdown UI, "Wrong price data" triggers immediate re-scrape via new `POST /fetch-card` endpoint. 170 tests passing.
+- [ ] Walk through UI with owner sign-off (Phase 3 + multi-model Ask + dismiss-reason dropdown)
 - [x] **Session 31:** Ask render error fixed — null-guard all `window.fcdb` calls; dev mode shows all providers available for layout testing.
 - [x] **Session 31:** Ask IPC split into `buildAskContext` + `callSingleProvider` + `logAskMulti`; incremental per-model verdict rendering; AbortController cancel button; per-model elapsed timing on cards.
 - [x] **Session 31:** Verdict cards redesigned — grid layout (2-col on wide), colored provider border, Confidence% large, timing, cost, "Show more" toggle.

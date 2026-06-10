@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 
 interface Recommendation {
   id: number;
+  card_id: number | null;
   card_name: string;
   version_name: string;
   platform: string;
@@ -13,9 +14,18 @@ interface Recommendation {
   ts_utc: string;
   outcome_verdict: string | null;
   dismissed_at: string | null;
+  dismissed_reason: string | null;
   prior_count: number;
   model_id?: string;
 }
+
+const DISMISS_REASONS = [
+  'Wrong price data',
+  'Card is untradeable',
+  'Already own this',
+  'Bad call',
+  'Other',
+];
 
 const MODEL_DISPLAY: Record<string, { label: string; isNvidia: boolean }> = {
   'claude-haiku-4-5-20251001':              { label: 'Claude Haiku',    isNvidia: false },
@@ -165,10 +175,24 @@ export function Recommendations({ platform }: { platform: string }) {
     }
   }
 
-  async function handleDismiss(id: number) {
+  const [dismissMenuFor, setDismissMenuFor] = useState<number | null>(null);
+
+  async function handleDismiss(rec: Recommendation, reason: string) {
+    setDismissMenuFor(null);
     try {
-      await (window as any).fcdb.dismissRecommendation({ id });
-      setRecs(prev => prev.filter(r => r.id !== id));
+      await (window as any).fcdb.dismissRecommendation({ id: rec.id, reason });
+      setRecs(prev => prev.filter(r => r.id !== rec.id));
+      if (reason === 'Wrong price data' && rec.card_id) {
+        // Queue an immediate re-scrape so the bad price gets replaced
+        const res = await (window as any).fcdb.requestFreshPrice({
+          card_id: rec.card_id, platform: rec.platform,
+        });
+        if (res?.status === 'queued') {
+          showToast({ message: `Fresh price re-scrape queued for ${rec.card_name}`, type: 'info' });
+        } else if (res?.error) {
+          showToast({ message: `Could not queue re-scrape: ${res.error}`, type: 'error' });
+        }
+      }
     } catch {}
   }
 
@@ -412,15 +436,45 @@ export function Recommendations({ platform }: { platform: string }) {
               {/* Footer */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 {!dismissed && (
-                  <button
-                    onClick={() => handleDismiss(rec.id)}
-                    style={{
-                      background: 'transparent', color: '#475569', border: '1px solid #334155',
-                      borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12,
-                    }}
-                  >
-                    Dismiss
-                  </button>
+                  <div style={{ position: 'relative' }}>
+                    <button
+                      onClick={() => setDismissMenuFor(dismissMenuFor === rec.id ? null : rec.id)}
+                      style={{
+                        background: 'transparent', color: '#475569', border: '1px solid #334155',
+                        borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12,
+                      }}
+                    >
+                      Dismiss {dismissMenuFor === rec.id ? '▴' : '▾'}
+                    </button>
+                    {dismissMenuFor === rec.id && (
+                      <div style={{
+                        position: 'absolute', top: '110%', left: 0, zIndex: 10,
+                        background: '#0f172a', border: '1px solid #334155', borderRadius: 6,
+                        boxShadow: '0 6px 16px rgba(0,0,0,0.5)', minWidth: 180,
+                        overflow: 'hidden',
+                      }}>
+                        {DISMISS_REASONS.map(reason => (
+                          <div
+                            key={reason}
+                            onClick={() => handleDismiss(rec, reason)}
+                            style={{
+                              padding: '7px 14px', fontSize: 12, color: '#cbd5e1',
+                              cursor: 'pointer', borderBottom: '1px solid #1e293b',
+                            }}
+                            onMouseEnter={e => (e.currentTarget.style.background = '#1e293b')}
+                            onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                          >
+                            {reason}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {dismissed && rec.dismissed_reason && (
+                  <span style={{ fontSize: 12, color: '#475569' }}>
+                    Dismissed: {rec.dismissed_reason}
+                  </span>
                 )}
                 <div style={{ flex: 1 }} />
                 {rec.outcome_verdict ? (

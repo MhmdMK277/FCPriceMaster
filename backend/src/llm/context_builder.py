@@ -103,10 +103,27 @@ def _price_context(con: sqlite3.Connection, card_id: int, platform: str) -> dict
     ).fetchone()
 
     current = latest[0] if latest else None
+    last_ts = latest[1] if latest else None
     ago_24h = prev_24h[0] if prev_24h else None
     change_24h = None
     if current and ago_24h and ago_24h > 0:
         change_24h = round((current - ago_24h) / ago_24h * 100, 1)
+
+    # Data age + volume: the LLM must know how old the latest price is.
+    data_age_hours = None
+    if last_ts:
+        try:
+            ts = datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
+            if ts.tzinfo is None:  # naive timestamps in the DB are UTC by convention
+                ts = ts.replace(tzinfo=timezone.utc)
+            data_age_hours = round((datetime.now(timezone.utc) - ts).total_seconds() / 3600, 1)
+        except ValueError:
+            pass
+    snapshot_count = con.execute(
+        """SELECT COUNT(*) FROM price_snapshots
+           WHERE card_id=? AND platform=? AND bin_price > 0""",
+        (card_id, platform),
+    ).fetchone()[0]
 
     trend = "unknown"
     if change_24h is not None:
@@ -124,6 +141,9 @@ def _price_context(con: sqlite3.Connection, card_id: int, platform: str) -> dict
         "week_low": week[0] if week else None,
         "week_high": week[1] if week else None,
         "trend": trend,
+        "last_snapshot_ts": last_ts,
+        "data_age_hours": data_age_hours,
+        "snapshot_count": snapshot_count,
     }
 
 

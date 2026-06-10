@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('fcdb', {
   },
   getRecommendations:            (opts) => ipcRenderer.invoke('db:getRecommendations', opts),
   dismissRecommendation:         (opts) => ipcRenderer.invoke('db:dismissRecommendation', opts),
+  requestFreshPrice:             (opts) => ipcRenderer.invoke('db:requestFreshPrice', opts),
   getRecommendationStats:        (opts) => ipcRenderer.invoke('db:getRecommendationStats', opts),
   triggerRecommendations:        (opts) => ipcRenderer.invoke('db:triggerRecommendations', opts),
   getRecommendationBudgetStatus: ()     => ipcRenderer.invoke('db:getRecommendationBudgetStatus'),
