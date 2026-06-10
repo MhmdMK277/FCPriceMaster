@@ -180,6 +180,7 @@ Update status at the end of every session. Do not skip ahead — finish the curr
 - [x] **Session 31:** Ask history fixed — `ask_multi` aggregate rows logged per session; history shows verdict summary (N× BUY/HOLD/AVOID) and expands to full verdict cards; History (N) count accurate.
 - [x] **Session 31:** Migration 0010 adds `model_id` column to recommendations; `_insert_recommendation` stores the generating model; recommendation cards show colored AI source badge.
 - [x] **Session 31:** Recommendations budget bar shows model name + "Free (NVIDIA · 40 RPM)" for NVIDIA providers.
+- [x] **Session 32:** Real cancel via AbortController — `callNvidiaModel`/`callAnthropic` now accept `signal` parameter; `db:callSingleProvider` creates a per-call AbortController stored in `activeSessions` Map keyed by `${session_id}_${provider_id}`; `db:cancelSession` IPC handler aborts all in-flight fetches for a session; AbortError returns `{error:'cancelled'}` verdict; Ask.tsx generates a UUID per analyse click, passes it to every provider call, and fires `cancelSession` on Cancel; cancelled-but-resolved verdicts render as grey CancelledCard.
 - [!] Accumulate ≥500 outcomes to seed Phase 4 classifier — blocked: Anthropic credits at $0, recommendations not generating
 
 ---

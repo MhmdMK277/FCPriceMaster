@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('fcdb', {
   buildAskContext:   (opts) => ipcRenderer.invoke('db:buildAskContext', opts),
   callSingleProvider:(opts) => ipcRenderer.invoke('db:callSingleProvider', opts),
   logAskMulti:       (opts) => ipcRenderer.invoke('db:logAskMulti', opts),
+  cancelSession:     (opts) => ipcRenderer.invoke('db:cancelSession', opts),
   getRecommendations:            (opts) => ipcRenderer.invoke('db:getRecommendations', opts),
   dismissRecommendation:         (opts) => ipcRenderer.invoke('db:dismissRecommendation', opts),
   getRecommendationStats:        (opts) => ipcRenderer.invoke('db:getRecommendationStats', opts),

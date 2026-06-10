@@ -201,6 +201,7 @@ export function Ask({ platform, setPlatform }: { platform: Platform; setPlatform
   const [imageNote, setImageNote] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
 
   const loadHistory = useCallback(async () => {
     if (!isElectron) return;
@@ -272,6 +273,9 @@ export function Ask({ platform, setPlatform }: { platform: Platform; setPlatform
   }
 
   function handleCancel() {
+    if (isElectron && sessionIdRef.current) {
+      window.fcdb.cancelSession({ session_id: sessionIdRef.current }).catch(() => { /**/ });
+    }
     if (abortRef.current) abortRef.current.abort();
     setVerdictsByProvider(prev => {
       const next = { ...prev };
@@ -296,6 +300,8 @@ export function Ask({ platform, setPlatform }: { platform: Platform; setPlatform
 
     const ctrl = new AbortController();
     abortRef.current = ctrl;
+    const sessionId = crypto.randomUUID();
+    sessionIdRef.current = sessionId;
     setLoading(true);
     setError(null);
     setContextInfo(null);
@@ -317,9 +323,14 @@ export function Ask({ platform, setPlatform }: { platform: Platform; setPlatform
             user_message: userMessage,
             image_b64: imageB64,
             input_text: tradeCallText,
+            session_id: sessionId,
           });
           if (!ctrl.signal.aborted) {
-            setVerdictsByProvider(prev => ({ ...prev, [providerId]: verdict }));
+            if (verdict.error === 'cancelled') {
+              setVerdictsByProvider(prev => ({ ...prev, [providerId]: 'cancelled' }));
+            } else {
+              setVerdictsByProvider(prev => ({ ...prev, [providerId]: verdict }));
+            }
           }
           return verdict;
         } catch (e: unknown) {

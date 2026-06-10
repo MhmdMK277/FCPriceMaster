@@ -93,6 +93,9 @@ app.on('will-quit', () => {
 
 const NVIDIA_BASE_URL = 'https://integrate.api.nvidia.com/v1';
 
+// Per-session AbortControllers: key = `${session_id}_${provider_id}` -> AbortController
+const activeSessions = new Map();
+
 const NVIDIA_MODELS = {
   'deepseek-v4-pro': { modelId: 'deepseek-ai/deepseek-v4-pro',       displayName: 'DeepSeek V4 Pro' },
   'kimi-k2-6':       { modelId: 'moonshotai/kimi-k2.6',              displayName: 'Kimi K2.6' },
@@ -297,7 +300,7 @@ function parseVerdictText(raw, providerId, providerName) {
   };
 }
 
-async function callNvidiaModel(apiKey, modelId, userMessage, imageB64 = null) {
+async function callNvidiaModel(apiKey, modelId, userMessage, imageB64 = null, signal = null) {
   const messages = imageB64
     ? [{
         role: 'user',
@@ -316,7 +319,7 @@ async function callNvidiaModel(apiKey, modelId, userMessage, imageB64 = null) {
     max_tokens: 500,
     temperature: 0,
   });
-  const response = await fetch(`${NVIDIA_BASE_URL}/chat/completions`, {
+  const fetchOpts = {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -324,7 +327,9 @@ async function callNvidiaModel(apiKey, modelId, userMessage, imageB64 = null) {
       'Accept': 'application/json',
     },
     body,
-  });
+  };
+  if (signal) fetchOpts.signal = signal;
+  const response = await fetch(`${NVIDIA_BASE_URL}/chat/completions`, fetchOpts);
   if (!response.ok) {
     const errText = await response.text();
     throw new Error(`NVIDIA API ${response.status}: ${errText.slice(0, 200)}`);
@@ -332,7 +337,7 @@ async function callNvidiaModel(apiKey, modelId, userMessage, imageB64 = null) {
   return response.json();
 }
 
-async function callAnthropic(apiKey, userMessage) {
+async function callAnthropic(apiKey, userMessage, signal = null) {
   const body = JSON.stringify({
     model: 'claude-haiku-4-5-20251001',
     max_tokens: 1000,
@@ -341,7 +346,7 @@ async function callAnthropic(apiKey, userMessage) {
     messages: [{ role: 'user', content: userMessage }],
   });
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+  const fetchOpts = {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -349,7 +354,9 @@ async function callAnthropic(apiKey, userMessage) {
       'anthropic-version': '2023-06-01',
     },
     body,
-  });
+  };
+  if (signal) fetchOpts.signal = signal;
+  const response = await fetch('https://api.anthropic.com/v1/messages', fetchOpts);
 
   if (!response.ok) {
     const errText = await response.text();
@@ -391,24 +398,28 @@ ipcMain.handle('db:buildAskContext', (_e, { trade_call, platform }) => {
 });
 
 // Call a single LLM provider and return its verdict + timing
-ipcMain.handle('db:callSingleProvider', async (_e, { provider_id, user_message, image_b64 = null, input_text = '' }) => {
+ipcMain.handle('db:callSingleProvider', async (_e, { provider_id, user_message, image_b64 = null, input_text = '', session_id = 'anonymous' }) => {
   const start = Date.now();
+  const sessionKey = `${session_id}_${provider_id}`;
+  const controller = new AbortController();
+  activeSessions.set(sessionKey, controller);
+  const { signal } = controller;
+  const cleanup = () => activeSessions.delete(sessionKey);
 
   if (provider_id === 'haiku') {
     const apiKey = getAnthropicKey();
-    if (!apiKey) return { provider_id: 'haiku', provider_name: 'Claude Haiku', error: 'ANTHROPIC_API_KEY not set', cost_usd: 0, elapsed_ms: 0 };
+    if (!apiKey) { cleanup(); return { provider_id: 'haiku', provider_name: 'Claude Haiku', error: 'ANTHROPIC_API_KEY not set', cost_usd: 0, elapsed_ms: 0 }; }
     try {
       const cfg = readLLMConfig();
       const wDb = openWriteDb();
       checkDailyCap(wDb, cfg.daily_cap_usd);
-      const apiResponse = await callAnthropic(apiKey, user_message);
+      const apiResponse = await callAnthropic(apiKey, user_message, signal);
       const raw = apiResponse.content[0].text;
       const result = parseVerdictText(raw, 'haiku', 'Claude Haiku');
       const inputTokens = apiResponse.usage?.input_tokens || 0;
       const outputTokens = apiResponse.usage?.output_tokens || 0;
       result.cost_usd = inputTokens * 0.00000025 + outputTokens * 0.00000125;
       result.elapsed_ms = Date.now() - start;
-      // Log for budget tracking (feature='ask')
       logLLMCall(wDb, {
         model: apiResponse.model || 'claude-haiku-4-5-20251001',
         inputTokens, outputTokens,
@@ -418,27 +429,38 @@ ipcMain.handle('db:callSingleProvider', async (_e, { provider_id, user_message, 
       });
       return result;
     } catch (e) {
+      if (e.name === 'AbortError') {
+        return { provider_id: 'haiku', provider_name: 'Claude Haiku', error: 'cancelled', action: 'hold', confidence: 0, reasoning: 'Request cancelled', cost_usd: 0, elapsed_ms: Date.now() - start };
+      }
       return { provider_id: 'haiku', provider_name: 'Claude Haiku', error: e.message, cost_usd: 0, elapsed_ms: Date.now() - start };
+    } finally {
+      cleanup();
     }
   }
 
   const modelInfo = NVIDIA_MODELS[provider_id];
-  if (!modelInfo) return { provider_id, provider_name: provider_id, error: `Unknown provider: ${provider_id}`, cost_usd: 0, elapsed_ms: 0 };
+  if (!modelInfo) { cleanup(); return { provider_id, provider_name: provider_id, error: `Unknown provider: ${provider_id}`, cost_usd: 0, elapsed_ms: 0 }; }
   const nvidiaKey = getNvidiaKey();
-  if (!nvidiaKey) return { provider_id, provider_name: modelInfo.displayName, error: 'NVIDIA_API_KEY not set', cost_usd: 0, elapsed_ms: 0 };
+  if (!nvidiaKey) { cleanup(); return { provider_id, provider_name: modelInfo.displayName, error: 'NVIDIA_API_KEY not set', cost_usd: 0, elapsed_ms: 0 }; }
   try {
     const apiResponse = await callNvidiaModel(
       nvidiaKey,
       modelInfo.modelId,
       user_message,
       provider_id === 'mistral-vision' ? image_b64 : null,
+      signal,
     );
     const raw = apiResponse.choices?.[0]?.message?.content || '';
     const result = parseVerdictText(raw, provider_id, modelInfo.displayName);
     result.elapsed_ms = Date.now() - start;
     return result;
   } catch (e) {
+    if (e.name === 'AbortError') {
+      return { provider_id, provider_name: modelInfo.displayName, error: 'cancelled', action: 'hold', confidence: 0, reasoning: 'Request cancelled', cost_usd: 0, elapsed_ms: Date.now() - start };
+    }
     return { provider_id, provider_name: modelInfo.displayName, error: e.message, cost_usd: 0, elapsed_ms: Date.now() - start };
+  } finally {
+    cleanup();
   }
 });
 
@@ -457,6 +479,17 @@ ipcMain.handle('db:logAskMulti', (_e, { input_text, verdicts }) => {
     console.error('[logAskMulti] failed:', e.message);
   }
   return { ok: true };
+});
+
+// Abort all in-flight fetch() calls for a session (called when user clicks Cancel)
+ipcMain.handle('db:cancelSession', (_e, { session_id }) => {
+  for (const [key, controller] of activeSessions.entries()) {
+    if (key.startsWith(session_id + '_')) {
+      controller.abort();
+      activeSessions.delete(key);
+    }
+  }
+  return { cancelled: true };
 });
 
 ipcMain.handle('db:askMultiModel', async (_e, { trade_call, provider_ids, platform = 'pc', image_b64 = null }) => {
@@ -784,6 +817,7 @@ if (isSelfTest) {
         'db:buildAskContext',
         'db:callSingleProvider',
         'db:logAskMulti',
+        'db:cancelSession',
       ];
 
       const result = {

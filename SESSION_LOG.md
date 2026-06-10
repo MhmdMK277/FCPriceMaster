@@ -21,6 +21,40 @@ Required fields per entry: date, session number, goal, done, next, gotchas, chan
 
 <!-- Entries go below this line, newest first -->
 
+### 2026-06-10 — session 32
+**Goal:** Fix broken IPC bridge (BUG 1), implement real HTTP-level cancel via AbortController (BUG 2), verify Recommendations Generate now (BUG 3).
+
+**Done:**
+- BUG 1 audit: all 4 handlers (`buildAskContext`, `callSingleProvider`, `logAskMulti`, `triggerRecommendations`) were already present in preload.cjs from Session 31. Electron.d.ts and selftest both confirmed. No changes needed.
+- BUG 2 — Real cancel implemented end-to-end:
+  - `callNvidiaModel` and `callAnthropic` now accept optional `signal` parameter; passed to `fetch()` via `fetchOpts.signal`.
+  - `activeSessions` Map added to main.cjs (key: `${session_id}_${provider_id}` → AbortController).
+  - `db:callSingleProvider` creates an AbortController per call, stores in Map, passes signal to API fetch, deletes from Map in finally block. AbortError caught and returned as `{error: 'cancelled', action: 'hold', confidence: 0, ...}` so IPC never throws.
+  - `db:cancelSession` IPC handler: iterates `activeSessions`, aborts all controllers matching `session_id`, deletes them.
+  - `cancelSession` added to preload.cjs and electron.d.ts.
+  - Ask.tsx: `sessionIdRef` added; each Analyse click generates `crypto.randomUUID()` stored in ref; `session_id` passed to every `callSingleProvider` call; `handleCancel` fires `window.fcdb.cancelSession` before aborting the local AbortController. If a verdict returns with `error === 'cancelled'`, state is set to `'cancelled'` (grey CancelledCard) not error.
+  - Selftest now lists 22 handlers (added `db:cancelSession`).
+- BUG 3 — Recommendations Generate now: traced full chain. `triggerRecommendations` in preload → `db:triggerRecommendations` in main.cjs → HTTP POST to 127.0.0.1:8765 → scheduler `_http_trigger_server` → `generate_recommendations(platform, db_path, 3, provider_id)`. All plumbing present and correct from Session 30/31.
+- `pnpm build` clean (TypeScript + Vite). 149/149 pytest pass. Selftest exits 0.
+
+**Next:** Owner visual sign-off pass in the Electron app: (1) 3-model Ask query → verdicts appear incrementally, timing shown; (2) Click Cancel mid-query → providers show grey "cancelled" badges, HTTP fetches actually aborted (no cost for NVIDIA); (3) Recommendations → DeepSeek V4 Pro → Generate now → green model badge on result card.
+
+**Gotchas:**
+- AbortSignal is passed as a fetchOpts property, not a spread, to avoid issues with older Electron Node ABI that don't support `{ ...opts, signal }` on Request objects.
+- If a callSingleProvider call completes *just before* cancelSession is called, the session key is already deleted from activeSessions (via finally) — cancelSession will just find nothing to abort. This is a benign race; the result is already on its way back to the renderer, but `ctrl.signal.aborted` in Ask.tsx will suppress updating the display.
+- `error === 'cancelled'` check in Ask.tsx applies only when the verdict arrives after the AbortController was already aborted (race condition). The main fast path is the AbortError thrown from fetch before a response arrives.
+- Reddit is at 172+ consecutive failures (403 from old.reddit.com without credentials). Set `REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET` in `.env` to re-enable.
+
+**Changed files:**
+- `SESSION_LOG.md`
+- `ROADMAP.md`
+- `frontend/electron/main.cjs`
+- `frontend/electron/preload.cjs`
+- `frontend/src/electron.d.ts`
+- `frontend/src/views/Ask.tsx`
+
+---
+
 ### 2026-06-10 — session 31
 **Goal:** Ask UI polish (render error, cancel button, timing, history, Select all/Clear all, Mistral Vision gating); Recommendations multi-model badge + budget bar; migration 0010 for model_id.
 

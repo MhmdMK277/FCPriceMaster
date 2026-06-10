@@ -22,8 +22,9 @@ declare global {
       askMultiModel(opts: { trade_call: string; provider_ids: string[]; platform?: Platform; image_b64?: string | null }): Promise<MultiModelResult>;
       getProviderAvailability(): Promise<ProviderAvailability>;
       buildAskContext(opts: { trade_call: string; platform: Platform }): Promise<{ userMessage: string; context_info: { cards: string[]; signals_count: number } }>;
-      callSingleProvider(opts: { provider_id: string; user_message: string; image_b64?: string | null; input_text?: string }): Promise<import('./lib/types').MultiModelVerdict>;
+      callSingleProvider(opts: { provider_id: string; user_message: string; image_b64?: string | null; input_text?: string; session_id?: string }): Promise<import('./lib/types').MultiModelVerdict>;
       logAskMulti(opts: { input_text: string; verdicts: import('./lib/types').MultiModelVerdict[] }): Promise<{ ok: boolean }>;
+      cancelSession(opts: { session_id: string }): Promise<{ cancelled: boolean }>;
       getRecommendations(opts?: { platform?: Platform; limit?: number; activeOnly?: boolean; showAll?: boolean }): Promise<unknown[]>;
       dismissRecommendation(opts: { id: number }): Promise<void>;
       getRecommendationStats(opts?: { days?: number }): Promise<unknown>;
