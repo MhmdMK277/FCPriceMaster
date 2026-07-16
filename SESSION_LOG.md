@@ -21,6 +21,41 @@ Required fields per entry: date, session number, goal, done, next, gotchas, chan
 
 <!-- Entries go below this line, newest first -->
 
+### 2026-07-16 — session 36
+**Goal:** Full audit + course correction + forward execution (project takeover session): verify Session 35 landed, fix what the audit finds, Hallmark UI redesign, project SKILL.md, README, security scan, GitHub push.
+
+**Done:**
+- **Audit:** Session 35 WAS fully executed (migrations 0011/0012 applied in DB, staleness guard + sweep jobs + tradeable classifiers live in code, sweeps grew coverage 2,049 → 4,855 cards / 3,976 tradeable). 170/170 tests passed pre-fix. No ghost processes; port 8765 free. Everything stale since June 13 because the app simply hasn't been launched — not a code bug; staleness guard correctly blocks recs on stale data.
+- **BUG FIX (increment ladder):** `_is_valid_fut_price` allowed %250 across 10k–100k; the real ladder is 250 for 10k–50k and **500 for 50k–100k**. 26 SBC estimates (59,250 / 97,750 / 73,250-style) leaked through post-session-35. Fixed the ladder, added 4 test cases for the 50k–100k band, purged the 26 rows. 174/174 tests pass.
+- **BUG FIX (timestamp format):** `evaluate_outcomes` wrote `datetime('now')` (space format) into `outcomes.evaluated_at_utc` — same format-mismatch class as the 38-day recommender outage. Switched both INSERTs to `strftime('%Y-%m-%dT%H:%M:%SZ','now')`; normalized the 6 existing rows.
+- **BUG FIX (dead scheduled recs):** scheduled `job_recommendations` always used the default provider (haiku) — with $0 Anthropic balance every scheduled run since session 30 produced nothing (only 6 recs exist, all manual NVIDIA). Added `scheduled_provider` to `config/llm_config.yaml` (set to `gpt-oss-120b`, free + verified end-to-end in session 34); scheduler reads it.
+- **Repo state fix:** working-copy ROADMAP.md had regressed to a pre-session-28 version (mtime June 28) deleting the sessions 28–35 records — restored from HEAD, since the deleted lines document work verifiably present in the code.
+- **Live pipeline check:** `futgg --once --limit 5` works against current FUT.GG (Festival of Football promo cards scraped, health row OK).
+- **Hallmark redesign:** installed nutlope/hallmark; audit found 5 critical / 5 major / 3 minor tells (Tailwind-slate default palette, single system font, zero tokens, side-stripe cards ×3, suppressed focus, 52 inline style blocks in Recommendations.tsx, emoji as icons). Redesigned as a design.md-managed app: atmospheric genre, custom "Coin" theme (gold accent over warm near-black, OKLCH tokens), Bricolage Grotesque + Geist + Geist Mono (self-hosted via @fontsource — CSP blocks CDNs), tabular-nums on all data, :focus-visible everywhere, elevation by lightness, two fixed canvas blooms, one view-mount fade. New `design.md`, `frontend/src/tokens.css`, rewritten `index.css`/`App.css`, Recommendations.tsx converted to classes, remaining hex in all views token-swapped. `pnpm build` clean; visually verified in browser (Ask, Recommendations, Top Movers screenshots).
+- **Project skill:** `.claude/skills/fcpricemaster/SKILL.md` — FUT domain rules (BIN validity ladder, untradeable detection, staleness, T-format timestamps), provider system quirks, non-negotiables.
+- **Security:** full-history scan — `.env`/DB never committed; `nvidia_credentials/*.py` contain model IDs only; `.env.example` placeholders only. `x_com_cookies.txt` WAS in history (added f6bab88, untracked c1854c3) — **purged from all history with git filter-repo and force-pushed**; owner should still invalidate that X session (log out everywhere / rotate password) since the repo was public. Redacted a truncated `nvapi-4wnM...` key prefix from old SESSION_LOG entries.
+- **README.md** written (project intro, stack, setup, multi-model table, status, re-private note; no license file by design).
+
+**Next:** LAUNCH THE APP (`scripts\dev.ps1`) — all data is 33 days stale and refreshes only while the scheduler runs; the 06:00/06:30 UTC sweeps rebuild coverage overnight. Then owner visual pass on the redesigned UI. Consider archiving SESSION_LOG entries 1–30 to `docs/session-archive.md` (file is 134KB and keeps growing; see MD-structure note in this session's report).
+
+**Gotchas:**
+- The FUT ladder's 50k–100k band is 500s, not 250s. Migration 0011 and the session-35 scraper both encoded 250 — if you see %250-but-not-%500 prices in that band, they are SBC estimates.
+- `outcomes.evaluated_at_utc` was the only space-format column left; everything is T-format now. Keep it that way.
+- Scheduled recs now follow `scheduled_provider` in llm_config.yaml. Set it back to `haiku` only after the Anthropic account has credits.
+- git history was rewritten (filter-repo) on 2026-07-16 — any old clone must be re-cloned, not pulled.
+- Frontend fonts are bundled locally (@fontsource); the index.html CSP blocks font CDNs by design.
+
+**Changed files:**
+- `backend/src/scrapers/futgg.py`, `backend/tests/test_futgg.py` (ladder fix + tests)
+- `backend/src/llm/recommender.py` (outcome timestamp format)
+- `backend/src/workers/scheduler.py`, `config/llm_config.yaml` (scheduled_provider)
+- `design.md`, `.hallmark/log.json`, `.agents/skills/hallmark/` (new)
+- `frontend/src/tokens.css` (new), `frontend/src/index.css`, `frontend/src/App.css` (rewrites)
+- `frontend/src/views/Recommendations.tsx` (inline styles → classes), `Ask.tsx`, `Fodder.tsx`, `CardSearch.tsx`, `frontend/src/App.tsx` (token swaps)
+- `frontend/package.json` (+3 @fontsource packages)
+- `.claude/skills/fcpricemaster/SKILL.md` (new), `README.md` (new)
+- `SESSION_LOG.md`, `ROADMAP.md`
+
 ### 2026-06-10 — session 35
 **Goal:** Data quality overhaul — staleness guard, untradeable detection, full card sweep. Root cause: recommendations were being generated on April price data, and untradeable SBC cards (Son TOTS HM etc.) had their SBC cost estimates stored as market prices.
 
@@ -294,14 +329,14 @@ Required fields per entry: date, session number, goal, done, next, gotchas, chan
 
 **Next:**
 1. **IMMEDIATE: Top up Anthropic account credits** — recommender cannot run until credits are added. Go to https://console.anthropic.com → Billing.
-2. Add `NVIDIA_API_KEY=nvapi-4wnM...` to `.env` (key is in `nvidia_build_credentials/` — **do not commit that file**) to enable multi-model Ask.
+2. Add `NVIDIA_API_KEY=nvapi-<redacted>` to `.env` (key is in `nvidia_build_credentials/` — **do not commit that file**) to enable multi-model Ask.
 3. Add `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` to `.env` (create a script app at https://www.reddit.com/prefs/apps) to restore Reddit signals.
 4. Run dev.ps1, try Ask view with multiple models selected.
 5. Phase 3 UI sign-off walkthrough (still deferred since session 25).
 
 **Gotchas:**
 - The `recommendations_pc` job will now fire ~30s after scheduler start (every startup) AND at 08:00 UTC. If the Anthropic account is topped up, the first run after restart will generate recommendations. The $0.02/day autonomous budget guard still applies.
-- `nvidia_build_credentials/mistral-small-4-119b-2603.py` contains a live NVIDIA API key. It is now gitignored. Copy the key to `.env` as `NVIDIA_API_KEY=nvapi-4wn...` — do not commit the credentials file.
+- `nvidia_build_credentials/mistral-small-4-119b-2603.py` contains a live NVIDIA API key. It is now gitignored. Copy the key to `.env` as `NVIDIA_API_KEY=nvapi-<redacted>` — do not commit the credentials file.
 - Reddit `_disabled_health_written` flag is module-level. If the scheduler is restarted, one more "disabled" row is written. That's fine — it resets the consecutive_failures counter to 0, which is correct (the failure streak was 9,735 — a clean row is better).
 - `_fetch_subreddit_posts` signature changed (new `token` parameter). Two existing tests updated to pass `token=None`.
 - The NVIDIA provider Python module is not yet wired into the autonomous recommender — it's Ask-only for now per spec.

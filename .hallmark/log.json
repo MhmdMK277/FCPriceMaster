@@ -1,0 +1,12 @@
+[
+  {
+    "date": "2026-07-16",
+    "scope": "app",
+    "macrostructure": "Workbench",
+    "theme": "custom",
+    "theme_axes": "dark / grotesk-sans-display / warm-gold",
+    "vibe": "after-dark gold-coin trading desk",
+    "enrichment": "none (two canvas blooms only)",
+    "brief": "FCPriceMaster - FUT trading advisor desktop app, 8 views, atmospheric redesign"
+  }
+]

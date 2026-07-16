@@ -132,9 +132,13 @@ async def job_fodder_sweep(scraper: FutGGScraper, db_path: str) -> None:  # noqa
 async def job_recommendations(platform: str, db_path: str) -> None:
     """Generate autonomous recommendations for one platform."""
     start = datetime.now(timezone.utc)
-    logger.info("JOB START  recommendations_%s", platform)
+    # Scheduled runs use scheduled_provider from llm_config.yaml. The old
+    # hardcoded default (haiku) meant every scheduled run silently produced
+    # nothing while the Anthropic balance was $0 — free NVIDIA models work.
+    provider_id = str(_load_config().get("scheduled_provider", "haiku"))
+    logger.info("JOB START  recommendations_%s via %s", platform, provider_id)
     try:
-        recs = await asyncio.to_thread(generate_recommendations, platform, db_path)
+        recs = await asyncio.to_thread(generate_recommendations, platform, db_path, 3, provider_id)
         elapsed = (datetime.now(timezone.utc) - start).total_seconds()
         logger.info("JOB DONE   recommendations_%s — %d recs in %.1fs", platform, len(recs), elapsed)
     except Exception as exc:

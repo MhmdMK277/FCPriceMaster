@@ -121,11 +121,14 @@ def _parse_badge(badge_text: str) -> tuple[str, float | None, int | None]:
 def _is_valid_fut_price(price: int) -> bool:
     """
     Reject prices that cannot be valid FUT market bids.
-    Actual EA FC price ladder (observed from live market):
+    EA FC price ladder:
       200–999: multiples of 50
       1000–9999: multiples of 100
-      10000–99999: multiples of 250
+      10000–49999: multiples of 250
+      50000–99999: multiples of 500
       100000+: multiples of 1000
+    The previous 10k–100k %250 rule let SBC cost estimates like 59,250 or
+    97,750 through — 50k+ BINs move in 500s.
     """
     if price < 200:
         return False
@@ -133,8 +136,10 @@ def _is_valid_fut_price(price: int) -> bool:
         return price % 50 == 0
     if price < 10000:
         return price % 100 == 0
-    if price < 100000:
+    if price < 50000:
         return price % 250 == 0
+    if price < 100000:
+        return price % 500 == 0
     return price % 1000 == 0
 
 

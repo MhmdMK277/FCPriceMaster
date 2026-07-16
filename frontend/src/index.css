@@ -1,14 +1,50 @@
+/* Hallmark · genre: atmospheric · macrostructure: Workbench · theme: custom "Coin"
+ * design-system: design.md · designed-as-app
+ */
+@import './tokens.css';
+@import '@fontsource-variable/bricolage-grotesque/index.css';
+@import '@fontsource-variable/geist/index.css';
+@import '@fontsource-variable/geist-mono/index.css';
+
 *, *::before, *::after { box-sizing: border-box; }
+
+html, body { overflow-x: clip; }
 
 body {
   margin: 0;
-  background: #0f172a;
-  color: #e2e8f0;
-  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+  background-color: var(--color-paper);
+  /* Two fixed gold blooms — the only atmosphere. Data surfaces sit on top. */
+  background-image:
+    radial-gradient(38rem 30rem at 12% -8%, var(--color-bloom-1), transparent 70%),
+    radial-gradient(44rem 34rem at 108% 108%, var(--color-bloom-2), transparent 70%);
+  background-attachment: fixed;
+  color: var(--color-ink);
+  font-family: var(--font-body);
+  font-size: var(--text-base);
   -webkit-font-smoothing: antialiased;
 }
 
 #root {
   width: 100%;
   min-height: 100vh;
+}
+
+/* Focus discipline — instant, never animated, everywhere. */
+:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+::selection {
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 120ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 100ms !important;
+  }
 }

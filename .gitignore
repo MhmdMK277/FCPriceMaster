@@ -28,3 +28,6 @@ frontend/build/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local skill symlink (points at .agents/skills/hallmark)
+.claude/skills/hallmark

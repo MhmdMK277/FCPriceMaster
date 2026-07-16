@@ -5,6 +5,11 @@ temperature: 0
 # Daily spend cap in USD — application-layer safety net (secondary to Anthropic account cap)
 daily_cap_usd: 0.03
 
+# Provider used by SCHEDULED recommendation runs (manual runs pick their own
+# in the UI). gpt-oss-120b: free on NVIDIA NIM, verified end-to-end in
+# session 34. Set to "haiku" to use the Anthropic account instead.
+scheduled_provider: gpt-oss-120b
+
 nvidia:
   api_key_env: NVIDIA_API_KEY
   base_url: https://integrate.api.nvidia.com/v1

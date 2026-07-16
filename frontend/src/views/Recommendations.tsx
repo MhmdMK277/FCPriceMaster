@@ -69,12 +69,6 @@ interface Toast {
   type: 'info' | 'success' | 'error';
 }
 
-const CALL_COLORS: Record<string, string> = {
-  buy: '#22c55e',
-  avoid: '#ef4444',
-  hold: '#6b7280',
-};
-
 const MODEL_OPTIONS = [
   { id: 'haiku', label: 'Claude Haiku' },
   { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
@@ -85,10 +79,10 @@ const MODEL_OPTIONS = [
 ];
 
 const OUTCOME_LABELS: Record<string, string> = {
-  correct: '✅ Correct',
-  incorrect: '❌ Incorrect',
-  neutral: '⚪ Neutral',
-  expired: '💤 Expired',
+  correct: 'Correct',
+  incorrect: 'Incorrect',
+  neutral: 'Neutral',
+  expired: 'Expired',
 };
 
 function horizonLabel(hours: number | null): string {
@@ -200,61 +194,35 @@ export function Recommendations({ platform }: { platform: string }) {
   const budgetExhausted = !isFreeProvider && budget !== null && !budget.can_generate;
   const visible = showDismissed ? recs : recs.filter(r => !r.dismissed_at);
 
-  const toastBg: Record<string, string> = {
-    info: '#1e3a5f',
-    success: '#14532d',
-    error: '#450a0a',
-  };
-  const toastColor: Record<string, string> = {
-    info: '#93c5fd',
-    success: '#86efac',
-    error: '#fca5a5',
-  };
-
   return (
-    <div style={{ padding: '24px', maxWidth: 860, margin: '0 auto' }}>
+    <div className="rec-view">
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
-        <h2 style={{ margin: 0, color: '#f1f5f9', fontSize: 22 }}>Recommendations</h2>
-        <div style={{ flex: 1 }} />
-        <label style={{ color: '#94a3b8', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+      <div className="rec-header">
+        <h2>Recommendations</h2>
+        <div className="spacer" />
+        <label className="rec-check">
           <input type="checkbox" checked={showDismissed} onChange={e => setShowDismissed(e.target.checked)} />
           Show dismissed
         </label>
-        <label style={{ color: '#94a3b8', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <label className="rec-check">
           <input type="checkbox" checked={showAll} onChange={e => setShowAll(e.target.checked)} />
           Show all history
         </label>
-        <label style={{ color: '#94a3b8', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <label className="rec-check">
           Model:
           <select
+            className="rec-model-select"
             value={providerId}
             onChange={e => setProviderId(e.target.value)}
-            style={{
-              background: '#0f172a',
-              color: '#e2e8f0',
-              border: '1px solid #334155',
-              borderRadius: 5,
-              padding: '5px 8px',
-              fontSize: 12,
-            }}
           >
             {MODEL_OPTIONS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
           </select>
         </label>
         <div title={budgetExhausted ? `Daily AI budget used ($${budget?.cap_usd.toFixed(2)}). Resets at midnight UTC.` : undefined}>
           <button
+            className="btn"
             onClick={handleRefresh}
             disabled={generating || budgetExhausted}
-            style={{
-              background: budgetExhausted ? '#334155' : '#3b82f6',
-              color: budgetExhausted ? '#64748b' : '#fff',
-              border: 'none', borderRadius: 6,
-              padding: '7px 16px',
-              cursor: generating || budgetExhausted ? 'not-allowed' : 'pointer',
-              opacity: generating ? 0.6 : 1,
-              fontSize: 13,
-            }}
           >
             {generating ? 'Generating…' : budgetExhausted ? 'Budget used' : 'Refresh'}
           </button>
@@ -263,151 +231,107 @@ export function Recommendations({ platform }: { platform: string }) {
 
       {/* Toast */}
       {toast && (
-        <div style={{
-          background: toastBg[toast.type], color: toastColor[toast.type],
-          borderRadius: 8, padding: '10px 16px', marginBottom: 16, fontSize: 13,
-          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        }}>
+        <div className={`rec-toast rec-toast-${toast.type}`}>
           <span>{toast.message}</span>
-          <span
-            style={{ cursor: 'pointer', marginLeft: 16, opacity: 0.7 }}
-            onClick={() => setToast(null)}
-          >✕</span>
+          <button className="rec-toast-close" onClick={() => setToast(null)}>✕</button>
         </div>
       )}
 
       {/* Stats bar */}
       {stats && (
-        <div style={{
-          background: '#1e293b', borderRadius: 8, padding: '10px 16px',
-          marginBottom: 16, display: 'flex', gap: 24, fontSize: 13, color: '#94a3b8',
-          flexWrap: 'wrap',
-        }}>
-          <span>Last 7 days: <strong style={{ color: '#f1f5f9' }}>{stats.total_evaluated}</strong> evaluated</span>
+        <div className="rec-stats">
+          <span>Last 7 days: <strong>{stats.total_evaluated}</strong> evaluated</span>
           {stats.accuracy_pct !== null && (
-            <span>Accuracy: <strong style={{ color: '#22c55e' }}>{stats.accuracy_pct.toFixed(0)}%</strong></span>
+            <span>Accuracy: <strong className="rise">{stats.accuracy_pct.toFixed(0)}%</strong></span>
           )}
-          <span>Buys: <strong style={{ color: '#22c55e' }}>{stats.buy_total}</strong></span>
-          <span>Avoids: <strong style={{ color: '#ef4444' }}>{stats.avoid_total}</strong></span>
+          <span>Buys: <strong className="rise">{stats.buy_total}</strong></span>
+          <span>Avoids: <strong className="fall">{stats.avoid_total}</strong></span>
           {stats.next_eval_in_hours !== null && (
-            <span style={{ marginLeft: 'auto' }}>
-              Next eval: <strong style={{ color: '#f1f5f9' }}>in {stats.next_eval_in_hours}h</strong>
+            <span className="push-right">
+              Next eval: <strong>in {stats.next_eval_in_hours}h</strong>
             </span>
           )}
           {stats.oldest_pending_hours !== null && (
-            <span>Oldest pending: <strong style={{ color: '#f1f5f9' }}>{stats.oldest_pending_hours}h old</strong></span>
+            <span>Oldest pending: <strong>{stats.oldest_pending_hours}h old</strong></span>
           )}
         </div>
       )}
 
       {/* Budget bar */}
       {budget && (
-        <div style={{
-          background: '#1e293b', borderRadius: 8, padding: '8px 16px',
-          marginBottom: 20, display: 'flex', gap: 20, fontSize: 12, color: '#64748b',
-        }}>
+        <div className="rec-budget">
           {isFreeProvider ? (
             <span>
-              Model: <strong style={{ color: '#22c55e' }}>
+              Model: <strong className="rise">
                 {MODEL_OPTIONS.find(m => m.id === providerId)?.label || providerId}
               </strong>{' · '}
-              <strong style={{ color: '#22c55e' }}>Free (NVIDIA · 40 RPM)</strong>
+              <strong className="rise">Free (NVIDIA · 40 RPM)</strong>
             </span>
           ) : (
             <>
-              <span>Daily AI budget: <strong style={{ color: budgetExhausted ? '#ef4444' : '#94a3b8' }}>
+              <span>Daily AI budget: <strong className={budgetExhausted ? 'fall' : ''}>
                 ${budget.spent_today_usd.toFixed(4)} / ${budget.cap_usd.toFixed(2)}
               </strong></span>
-              <span>Remaining: <strong style={{ color: budgetExhausted ? '#ef4444' : '#22c55e' }}>
+              <span>Remaining: <strong className={budgetExhausted ? 'fall' : 'rise'}>
                 ${budget.remaining_usd.toFixed(4)}
               </strong></span>
             </>
           )}
           {!isFreeProvider && budgetExhausted && (
-            <span style={{ color: '#94a3b8' }}>Resets at midnight UTC</span>
+            <span>Resets at midnight UTC</span>
           )}
         </div>
       )}
 
       {error && (
-        <div style={{ background: '#450a0a', color: '#fca5a5', borderRadius: 8, padding: '10px 16px', marginBottom: 16, fontSize: 13 }}>
+        <div className="rec-error">
           {error}
         </div>
       )}
 
       {visible.length === 0 && !generating && (
-        <div style={{ color: '#64748b', textAlign: 'center', marginTop: 60, fontSize: 15 }}>
+        <div className="rec-empty">
           No recommendations yet.{' '}
           {!budgetExhausted && (
-            <span style={{ color: '#3b82f6', cursor: 'pointer' }} onClick={handleRefresh}>
+            <button className="rec-empty-link" onClick={handleRefresh}>
               Generate now
-            </span>
+            </button>
           )}
         </div>
       )}
 
       {/* Recommendation cards */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div className="rec-list">
         {visible.map(rec => {
-          const callColor = CALL_COLORS[rec.call] || '#6b7280';
           const dismissed = !!rec.dismissed_at;
+          const callClass = rec.call === 'buy' ? 'rec-call-buy' : rec.call === 'avoid' ? 'rec-call-avoid' : 'rec-call-hold';
           return (
-            <div
-              key={rec.id}
-              style={{
-                background: '#1e293b',
-                borderRadius: 10,
-                borderLeft: `4px solid ${callColor}`,
-                padding: '16px 20px',
-                opacity: dismissed ? 0.5 : 1,
-                position: 'relative',
-              }}
-            >
+            <div key={rec.id} className={`rec-card${dismissed ? ' dismissed' : ''}`}>
               {/* Top row */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                <span style={{
-                  background: callColor, color: '#fff', borderRadius: 4,
-                  padding: '2px 10px', fontSize: 12, fontWeight: 700, textTransform: 'uppercase',
-                }}>
-                  {rec.call}
-                </span>
-                <span style={{ color: '#94a3b8', fontSize: 13 }}>
-                  {rec.confidence.toFixed(0)}% confidence
-                </span>
-                <span style={{ color: '#64748b', fontSize: 12 }}>·</span>
-                <span style={{ color: '#94a3b8', fontSize: 13 }}>
-                  {horizonLabel(rec.horizon_hours)}
-                </span>
-                <div style={{ flex: 1 }} />
-                <span style={{ color: '#475569', fontSize: 12 }}>
-                  {timeAgo(rec.ts_utc)}
-                </span>
+              <div className="rec-card-top">
+                <span className={`rec-call ${callClass}`}>{rec.call}</span>
+                <span className="rec-confidence">{rec.confidence.toFixed(0)}% confidence</span>
+                <span className="rec-meta-sep">·</span>
+                <span className="rec-meta">{horizonLabel(rec.horizon_hours)}</span>
+                <div className="spacer" style={{ flex: 1 }} />
+                <span className="rec-time">{timeAgo(rec.ts_utc)}</span>
               </div>
 
               {/* Card name + prior count */}
-              <div style={{ color: '#f1f5f9', fontSize: 16, fontWeight: 600, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div className="rec-card-name">
                 <span>
                   {dismissed
                     ? <s>{rec.card_name} — {rec.version_name}</s>
                     : `${rec.card_name} — ${rec.version_name}`}
                 </span>
-                <span style={{ color: '#475569', fontSize: 12 }}>{rec.platform.toUpperCase()}</span>
+                <span className="rec-platform">{rec.platform.toUpperCase()}</span>
                 {rec.prior_count > 1 && (
-                  <span style={{
-                    color: '#64748b', fontSize: 11, background: '#0f172a',
-                    borderRadius: 4, padding: '1px 6px',
-                  }}>
-                    {rec.prior_count - 1} previous
-                  </span>
+                  <span className="rec-prior">{rec.prior_count - 1} previous</span>
                 )}
                 {rec.model_id && (() => {
                   const mi = getModelDisplay(rec.model_id);
                   return (
-                    <span style={{
-                      fontSize: 11, padding: '1px 7px', borderRadius: 3,
-                      background: mi.isNvidia ? '#122d1b' : '#2a1e3b',
-                      color: mi.isNvidia ? '#22c55e' : '#8b5cf6',
-                    }}>
+                    <span className={`rec-model-badge ${mi.isNvidia ? 'rec-model-nvidia' : 'rec-model-anthropic'}`}>
                       {mi.label}
                     </span>
                   );
@@ -416,73 +340,52 @@ export function Recommendations({ platform }: { platform: string }) {
 
               {/* Prices */}
               {rec.target_price && (
-                <div style={{ color: '#94a3b8', fontSize: 13, marginBottom: 8 }}>
-                  {rec.call === 'buy'
-                    ? `Buy at: ${rec.target_price.toLocaleString()} coins`
-                    : `Target: ${rec.target_price.toLocaleString()} coins`}
+                <div className="rec-price">
+                  {rec.call === 'buy' ? 'Buy at: ' : 'Target: '}
+                  <strong>{rec.target_price.toLocaleString()} coins</strong>
                 </div>
               )}
 
               {/* Reasoning */}
               {rec.reasoning && (
-                <div style={{
-                  color: '#cbd5e1', fontSize: 13, lineHeight: 1.5,
-                  marginBottom: 12, fontStyle: 'italic',
-                }}>
-                  "{rec.reasoning}"
-                </div>
+                <div className="rec-reasoning">{rec.reasoning}</div>
               )}
 
               {/* Footer */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div className="rec-card-footer">
                 {!dismissed && (
-                  <div style={{ position: 'relative' }}>
+                  <div className="rec-dismiss-wrap">
                     <button
+                      className="rec-dismiss-btn"
                       onClick={() => setDismissMenuFor(dismissMenuFor === rec.id ? null : rec.id)}
-                      style={{
-                        background: 'transparent', color: '#475569', border: '1px solid #334155',
-                        borderRadius: 5, padding: '4px 12px', cursor: 'pointer', fontSize: 12,
-                      }}
                     >
                       Dismiss {dismissMenuFor === rec.id ? '▴' : '▾'}
                     </button>
                     {dismissMenuFor === rec.id && (
-                      <div style={{
-                        position: 'absolute', top: '110%', left: 0, zIndex: 10,
-                        background: '#0f172a', border: '1px solid #334155', borderRadius: 6,
-                        boxShadow: '0 6px 16px rgba(0,0,0,0.5)', minWidth: 180,
-                        overflow: 'hidden',
-                      }}>
+                      <div className="rec-dismiss-menu">
                         {DISMISS_REASONS.map(reason => (
-                          <div
+                          <button
                             key={reason}
+                            className="rec-dismiss-item"
                             onClick={() => handleDismiss(rec, reason)}
-                            style={{
-                              padding: '7px 14px', fontSize: 12, color: '#cbd5e1',
-                              cursor: 'pointer', borderBottom: '1px solid #1e293b',
-                            }}
-                            onMouseEnter={e => (e.currentTarget.style.background = '#1e293b')}
-                            onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                           >
                             {reason}
-                          </div>
+                          </button>
                         ))}
                       </div>
                     )}
                   </div>
                 )}
                 {dismissed && rec.dismissed_reason && (
-                  <span style={{ fontSize: 12, color: '#475569' }}>
-                    Dismissed: {rec.dismissed_reason}
-                  </span>
+                  <span className="rec-dismissed-reason">Dismissed: {rec.dismissed_reason}</span>
                 )}
-                <div style={{ flex: 1 }} />
+                <div className="spacer" />
                 {rec.outcome_verdict ? (
-                  <span style={{ fontSize: 13, color: '#94a3b8' }}>
+                  <span className={`rec-outcome rec-outcome-${rec.outcome_verdict}`}>
                     {OUTCOME_LABELS[rec.outcome_verdict] || rec.outcome_verdict}
                   </span>
                 ) : (
-                  <span style={{ fontSize: 13, color: '#475569' }}>⏳ Pending</span>
+                  <span className="rec-outcome rec-outcome-pending">Pending</span>
                 )}
               </div>
             </div>

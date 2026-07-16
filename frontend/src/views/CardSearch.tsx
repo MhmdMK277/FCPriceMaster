@@ -24,19 +24,19 @@ function PriceChart({ snapshots }: { snapshots: CardDetailResult['snapshots'] })
   return (
     <ResponsiveContainer width="100%" height={200}>
       <LineChart data={data} margin={{ top: 4, right: 12, left: 0, bottom: 4 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-        <XAxis dataKey="ts" tick={{ fontSize: 11, fill: '#64748b' }} />
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--color-paper-3)" />
+        <XAxis dataKey="ts" tick={{ fontSize: 11, fill: 'var(--color-faint)' }} />
         <YAxis
           tickFormatter={v => formatPrice(v)}
-          tick={{ fontSize: 11, fill: '#64748b' }}
+          tick={{ fontSize: 11, fill: 'var(--color-faint)' }}
           width={60}
         />
         <Tooltip
           formatter={(v: number) => [formatPrice(v), 'Price']}
-          contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 6 }}
-          labelStyle={{ color: '#94a3b8' }}
+          contentStyle={{ background: 'var(--color-paper-3)', border: '1px solid var(--color-rule)', borderRadius: 6 }}
+          labelStyle={{ color: 'var(--color-ink-2)' }}
         />
-        <Line type="monotone" dataKey="price" stroke="#38bdf8" strokeWidth={2} dot={false} />
+        <Line type="monotone" dataKey="price" stroke="var(--color-accent)" strokeWidth={2} dot={false} />
       </LineChart>
     </ResponsiveContainer>
   );

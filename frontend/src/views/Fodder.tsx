@@ -38,10 +38,10 @@ function relTime(iso: string): string {
 
 function positionColor(pos: string): string {
   const p = pos.toUpperCase();
-  if (p === 'GK') return '#f59e0b';
-  if (['CB', 'LB', 'RB', 'LWB', 'RWB'].includes(p)) return '#3b82f6';
-  if (['CDM', 'CM', 'CAM', 'LM', 'RM'].includes(p)) return '#10b981';
-  return '#ef4444';
+  if (p === 'GK') return 'var(--color-warn)';
+  if (['CB', 'LB', 'RB', 'LWB', 'RWB'].includes(p)) return 'var(--color-anthropic)';
+  if (['CDM', 'CM', 'CAM', 'LM', 'RM'].includes(p)) return 'var(--color-rise)';
+  return 'var(--color-fall)';
 }
 
 
@@ -52,7 +52,7 @@ function CardItem({ card }: { card: FodderCard }) {
   return (
     <div style={{
       display: 'flex', flexDirection: 'column', gap: 4, padding: '6px 8px',
-      background: '#0f172a', borderRadius: 8, border: '1px solid #1e293b',
+      background: 'var(--color-paper-2)', borderRadius: 8, border: '1px solid var(--color-rule)',
       width: 140, maxWidth: 140, flexShrink: 0,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -64,14 +64,14 @@ function CardItem({ card }: { card: FodderCard }) {
             {card.position}
           </span>
         )}
-        <span style={{ fontSize: 12, fontWeight: 600, color: '#e2e8f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-ink)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }}>
           {name}
         </span>
       </div>
-      <div style={{ fontSize: 10, color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+      <div style={{ fontSize: 10, color: 'var(--color-faint)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {version}
       </div>
-      <div style={{ fontSize: 13, fontWeight: 700, color: '#fbbf24' }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-accent)' }}>
         {fmtCoins(card.bin_price)}
       </div>
     </div>
@@ -161,7 +161,7 @@ export function Fodder({ platform }: { platform: Platform }) {
               >
                 <td>
                   <span className="fodder-rating">{rating}</span>
-                  <span style={{ marginLeft: 6, fontSize: 11, color: '#64748b' }}>
+                  <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--color-faint)' }}>
                     {isSelected ? '▲' : '▼'}
                   </span>
                 </td>
@@ -173,17 +173,17 @@ export function Fodder({ platform }: { platform: Platform }) {
 
               isSelected && (
                 <tr key={`expand-${rating}`}>
-                  <td colSpan={5} style={{ padding: 0, background: '#020617' }}>
+                  <td colSpan={5} style={{ padding: 0, background: 'var(--color-paper)' }}>
                     <div style={{ padding: '12px 16px' }}>
                       {/* Card list */}
                       <div style={{ marginBottom: 12 }}>
-                        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                        <div style={{ fontSize: 12, color: 'var(--color-faint)', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                           Top {expandedCards?.length ?? '…'} cheapest {rating}-rated cards
                         </div>
                         {!expandedCards ? (
-                          <div style={{ color: '#64748b', fontSize: 13 }}>Loading…</div>
+                          <div style={{ color: 'var(--color-faint)', fontSize: 13 }}>Loading…</div>
                         ) : expandedCards.length === 0 ? (
-                          <div style={{ color: '#64748b', fontSize: 13 }}>No card data yet — waiting for next sweep.</div>
+                          <div style={{ color: 'var(--color-faint)', fontSize: 13 }}>No card data yet — waiting for next sweep.</div>
                         ) : (
                           <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 6, maxWidth: '100%' }}>
                             {expandedCards.map(card => (
@@ -194,32 +194,32 @@ export function Fodder({ platform }: { platform: Platform }) {
                       </div>
 
                       {/* Price chart */}
-                      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      <div style={{ fontSize: 12, color: 'var(--color-faint)', marginBottom: 6, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                         7-day cheapest BIN — rating {rating} ({platform})
                       </div>
                       {chartData.length < 2 ? (
-                        <div style={{ color: '#64748b', fontSize: 13 }}>Not enough data points yet.</div>
+                        <div style={{ color: 'var(--color-faint)', fontSize: 13 }}>Not enough data points yet.</div>
                       ) : (
                         <ResponsiveContainer width="100%" height={160}>
                           <LineChart data={chartData.map(d => ({
                             ts: new Date(d.ts_utc).toLocaleDateString(),
                             price: d.cheapest_bin,
                           }))}>
-                            <XAxis dataKey="ts" tick={{ fill: '#64748b', fontSize: 11 }} />
+                            <XAxis dataKey="ts" tick={{ fill: 'var(--color-faint)', fontSize: 11 }} />
                             <YAxis
-                              tick={{ fill: '#64748b', fontSize: 11 }}
+                              tick={{ fill: 'var(--color-faint)', fontSize: 11 }}
                               tickFormatter={v => fmt(v)}
                               width={60}
                             />
                             <Tooltip
-                              contentStyle={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 6 }}
-                              labelStyle={{ color: '#94a3b8' }}
+                              contentStyle={{ background: 'var(--color-paper-2)', border: '1px solid var(--color-rule)', borderRadius: 6 }}
+                              labelStyle={{ color: 'var(--color-ink-2)' }}
                               formatter={(v: number) => [fmt(v), 'Cheapest BIN']}
                             />
                             <Line
                               type="monotone"
                               dataKey="price"
-                              stroke="#38bdf8"
+                              stroke="var(--color-accent)"
                               dot={false}
                               strokeWidth={2}
                             />

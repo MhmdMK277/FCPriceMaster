@@ -36,13 +36,12 @@ function ProviderBadge({ isNvidia }: { isNvidia: boolean }) {
 function MultiVerdictCard({ v }: { v: MultiModelVerdict }) {
   const [open, setOpen] = useState(false);
   const isNvidia = v.provider_id !== 'haiku';
-  const borderColor = isNvidia ? '#22c55e' : '#8b5cf6';
   const PREVIEW = 120;
   const reasoning = v.reasoning || '';
 
   if (v.error) {
     return (
-      <div className="multi-verdict-card" style={{ borderLeft: `3px solid #ef4444` }}>
+      <div className="multi-verdict-card multi-verdict-card-error">
         <div className="multi-verdict-header">
           <ProviderBadge isNvidia={isNvidia} />
           <span className="multi-verdict-name">{v.provider_name}</span>
@@ -53,7 +52,7 @@ function MultiVerdictCard({ v }: { v: MultiModelVerdict }) {
   }
 
   return (
-    <div className="multi-verdict-card" style={{ borderLeft: `3px solid ${borderColor}` }}>
+    <div className="multi-verdict-card">
       <div className="multi-verdict-header">
         <ProviderBadge isNvidia={isNvidia} />
         <span className="multi-verdict-name">{v.provider_name}</span>
@@ -82,32 +81,28 @@ function MultiVerdictCard({ v }: { v: MultiModelVerdict }) {
 }
 
 function PendingCard({ name, isNvidia, hint }: { name: string; isNvidia: boolean; hint?: string }) {
-  const borderColor = isNvidia ? '#22c55e' : '#8b5cf6';
   return (
-    <div className="multi-verdict-card" style={{ borderLeft: `3px solid ${borderColor}`, opacity: 0.55 }}>
+    <div className="multi-verdict-card multi-verdict-card-pending">
       <div className="multi-verdict-header">
         <ProviderBadge isNvidia={isNvidia} />
         <span className="multi-verdict-name">{name}</span>
         <span className="ask-spinner" style={{ marginLeft: 8 }} />
       </div>
-      <p style={{ color: '#64748b', fontSize: 13, margin: 0 }}>Querying…</p>
+      <p className="multi-verdict-pending-text">Querying…</p>
       {hint && (
-        <p style={{ color: '#64748b', fontSize: 11, fontStyle: 'italic', margin: '4px 0 0' }}>{hint}</p>
+        <p className="multi-verdict-pending-hint">{hint}</p>
       )}
     </div>
   );
 }
 
 function CancelledCard({ name, isNvidia }: { name: string; isNvidia: boolean }) {
-  const borderColor = isNvidia ? '#22c55e' : '#8b5cf6';
   return (
-    <div className="multi-verdict-card" style={{ borderLeft: `3px solid ${borderColor}`, opacity: 0.35 }}>
+    <div className="multi-verdict-card multi-verdict-card-cancelled">
       <div className="multi-verdict-header">
         <ProviderBadge isNvidia={isNvidia} />
         <span className="multi-verdict-name">{name}</span>
-        <span style={{ fontSize: 11, color: '#64748b', background: '#1e293b', padding: '2px 6px', borderRadius: 3 }}>
-          cancelled
-        </span>
+        <span className="ask-ctx-pill">cancelled</span>
       </div>
     </div>
   );
@@ -122,9 +117,6 @@ function HistoryRow({
   expanded: boolean;
   onToggle: () => void;
 }) {
-  const badgeSty = (bg: string, color: string) => ({
-    background: bg, color, padding: '1px 6px', borderRadius: 3, fontSize: 11,
-  });
 
   if (row.feature === 'ask_multi') {
     let verdicts: MultiModelVerdict[] = [];
@@ -141,11 +133,11 @@ function HistoryRow({
       <div className="ask-history-row" style={{ cursor: 'pointer' }} onClick={onToggle}>
         <div className="ask-history-meta">
           <span className="age">{new Date(row.ts_utc).toLocaleString()}</span>
-          <span style={{ fontSize: 11, color: '#64748b' }}>{verdicts.length} models</span>
-          {buyCount   > 0 && <span style={badgeSty('#14532d', '#4ade80')}>{buyCount}× BUY</span>}
-          {holdCount  > 0 && <span style={badgeSty('#1c1a08', '#fbbf24')}>{holdCount}× HOLD</span>}
-          {avoidCount > 0 && <span style={badgeSty('#450a0a', '#f87171')}>{avoidCount}× AVOID</span>}
-          {errCount   > 0 && <span style={{ fontSize: 11, color: '#64748b' }}>{errCount} err</span>}
+          <span className="ask-history-count">{verdicts.length} models</span>
+          {buyCount   > 0 && <span className="ask-history-badge risk-low">{buyCount}× BUY</span>}
+          {holdCount  > 0 && <span className="ask-history-badge risk-medium">{holdCount}× HOLD</span>}
+          {avoidCount > 0 && <span className="ask-history-badge risk-high">{avoidCount}× AVOID</span>}
+          {errCount   > 0 && <span className="ask-history-count">{errCount} err</span>}
         </div>
         <div className="ask-history-text">
           {(row.input_text || '').slice(0, 100)}{(row.input_text || '').length > 100 ? '…' : ''}
@@ -397,7 +389,7 @@ export function Ask({ platform, setPlatform }: { platform: Platform; setPlatform
         <h2>Ask</h2>
         <span className="ask-subtitle">AI trade-call analysis</span>
         {!isElectron && (
-          <span style={{ fontSize: 11, color: '#f59e0b', background: '#1c1a08', padding: '2px 8px', borderRadius: 3 }}>
+          <span className="risk-badge risk-medium">
             dev mode — Electron required for live data
           </span>
         )}
@@ -440,7 +432,7 @@ export function Ask({ platform, setPlatform }: { platform: Platform; setPlatform
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
             <span className="ask-label">Models:</span>
             <button className="ask-toggle-link" onClick={selectAll} type="button">Select all</button>
-            <span style={{ color: '#334155', fontSize: 12 }}>·</span>
+            <span className="rec-meta-sep">·</span>
             <button className="ask-toggle-link" onClick={clearAll} type="button">Clear all</button>
           </div>
           <div className="ask-provider-row">

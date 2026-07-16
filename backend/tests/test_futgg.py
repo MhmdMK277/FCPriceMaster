@@ -249,6 +249,10 @@ from src.scrapers.futgg import _is_real_bin_price, _classify_tradeable  # noqa: 
     (355600, "TOTS HM", False),       # 100k+ not multiple of 1000 → SBC estimate
     (47300, "TOTS", False),           # 10k-50k not multiple of 250
     (47250, "TOTS", True),            # 10k-50k multiple of 250
+    (59250, "POTM Serie A", False),   # 50k-100k multiple of 250 but not 500 → SBC estimate
+    (59500, "POTM Serie A", True),    # 50k-100k multiple of 500
+    (97750, "Time Warp", False),      # 50k-100k %250 leak seen live on June 11
+    (55500, "Fantasy UT", True),      # 50k-100k multiple of 500
     (5500, "Gold Rare", True),        # 1k-10k multiple of 100
     (5550, "Gold Rare", False),       # 1k-10k not multiple of 100
     (850, "Common", True),            # under 1k multiple of 50

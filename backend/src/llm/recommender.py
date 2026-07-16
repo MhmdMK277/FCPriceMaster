@@ -878,7 +878,7 @@ def evaluate_outcomes(db_path: str) -> int:
                 # Fodder rec: mark as expired (no per-card price to evaluate)
                 con.execute(
                     """INSERT INTO outcomes (recommendation_id, evaluated_at_utc, verdict, notes)
-                       VALUES (?, datetime('now'), 'expired', 'fodder rec — no card_id')""",
+                       VALUES (?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), 'expired', 'fodder rec — no card_id')""",
                     (rec_id,),
                 )
                 count += 1
@@ -922,7 +922,7 @@ def evaluate_outcomes(db_path: str) -> int:
 
             con.execute(
                 """INSERT INTO outcomes (recommendation_id, evaluated_at_utc, price_at_call, price_now, verdict)
-                   VALUES (?, datetime('now'), ?, ?, ?)""",
+                   VALUES (?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), ?, ?, ?)""",
                 (rec_id, p_call, p_now, verdict),
             )
             count += 1
