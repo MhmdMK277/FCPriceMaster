@@ -189,6 +189,9 @@ export function Ask({ platform, setPlatform }: { platform: Platform; setPlatform
   const [historyExpanded, setHistoryExpanded] = useState<Set<number>>(new Set());
   const [dailyStats, setDailyStats] = useState<{ calls: number; cost_usd: number } | null>(null);
   const [providerAvail, setProviderAvail] = useState<ProviderAvailability>({ haiku: true, nvidia: true });
+  // Per-provider endpoint health from the scheduler's NVIDIA probe.
+  // Unknown (absent) = healthy; only an explicit false greys a chip.
+  const [providerHealth, setProviderHealth] = useState<Record<string, boolean>>({});
   const [selectedProviders, setSelectedProviders] = useState<string[]>(['haiku']);
   const [imageB64, setImageB64] = useState<string | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
@@ -232,6 +235,18 @@ export function Ask({ platform, setPlatform }: { platform: Platform; setPlatform
     }).catch(() => { /**/ });
   }, [loadHistory, isElectron]);
 
+  // Endpoint health: re-read every 60s so a model NVIDIA restores un-greys
+  // without remounting (main.cjs refreshes its cache on a 30-min cadence).
+  useEffect(() => {
+    if (!isElectron || typeof window.fcdb.getProviderHealth !== 'function') return;
+    const fetchHealth = () => {
+      window.fcdb.getProviderHealth().then(setProviderHealth).catch(() => { /**/ });
+    };
+    fetchHealth();
+    const t = setInterval(fetchHealth, 60_000);
+    return () => clearInterval(t);
+  }, [isElectron]);
+
   function toggleProvider(id: string) {
     setSelectedProviders(prev =>
       prev.includes(id) ? prev.filter(p => p !== id) : [...prev, id],
@@ -242,7 +257,7 @@ export function Ask({ platform, setPlatform }: { platform: Platform; setPlatform
     const available: string[] = [];
     if (providerAvail.haiku) available.push('haiku');
     if (providerAvail.nvidia) available.push('deepseek-v4-pro', 'kimi-k2-6', 'qwen3-80b', 'mistral-small', 'gpt-oss-120b');
-    setSelectedProviders(available);
+    setSelectedProviders(available.filter(id => providerHealth[id] !== false));
   }
 
   function clearAll() {
@@ -439,13 +454,16 @@ export function Ask({ platform, setPlatform }: { platform: Platform; setPlatform
             {ALL_DISPLAY_PROVIDERS.map(p => {
               const isMistralVision = p.id === 'mistral-vision';
               const available = p.isNvidia ? providerAvail.nvidia : providerAvail.haiku;
-              const disabled = !available || (isMistralVision && !imageB64);
+              const unhealthy = providerHealth[p.id] === false;
+              const disabled = !available || unhealthy || (isMistralVision && !imageB64);
               const checked = selectedProviders.includes(p.id) && !disabled;
               const title = !available
                 ? `No ${p.isNvidia ? 'NVIDIA' : 'ANTHROPIC'}_API_KEY set in .env`
-                : isMistralVision && !imageB64
-                  ? 'Attach an image to enable Mistral Vision'
-                  : '';
+                : unhealthy
+                  ? 'Temporarily unavailable — NVIDIA endpoint offline'
+                  : isMistralVision && !imageB64
+                    ? 'Attach an image to enable Mistral Vision'
+                    : '';
               return (
                 <label
                   key={p.id}
@@ -459,10 +477,11 @@ export function Ask({ platform, setPlatform }: { platform: Platform; setPlatform
                     onChange={() => { if (!isMistralVision) toggleProvider(p.id); }}
                   />
                   <span className={`provider-chip ${
-                    !available ? 'provider-chip-nokey' : p.isNvidia ? 'provider-chip-nvidia' : 'provider-chip-anthropic'
+                    !available || unhealthy ? 'provider-chip-nokey' : p.isNvidia ? 'provider-chip-nvidia' : 'provider-chip-anthropic'
                   }`}>
                     {p.name}
                     {!available ? ' (No key)' : ''}
+                    {available && unhealthy ? ' (offline)' : ''}
                     {isMistralVision && !imageB64 ? ' (image only)' : ''}
                   </span>
                 </label>

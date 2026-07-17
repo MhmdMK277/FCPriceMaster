@@ -336,14 +336,34 @@ def _recent_signals(con: sqlite3.Connection, card_ids: list[int]) -> list[dict[s
 # Main builder
 # ---------------------------------------------------------------------------
 
-def build_context(text: str, platform: str, db_path: str | None = None) -> dict[str, Any]:
-    """Build full context for the LLM from the DB."""
+def build_context(
+    text: str,
+    platform: str,
+    db_path: str | None = None,
+    card_id: int | None = None,
+) -> dict[str, Any]:
+    """Build full context for the LLM from the DB.
+
+    When card_id is given (autonomous recommender — the exact card is known),
+    mentioned_cards is pinned to that card alone. Name matching would smear
+    versions of the same player into each other: "Bellingham Summer Stars"
+    once inherited the 2170h-old data age of the legacy "Bellingham TOTS"
+    card because both substring-match "Bellingham". Free-text Ask flows pass
+    no card_id and keep fuzzy matching.
+    """
     path = db_path or _db_path_from_env()
     con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
 
     try:
-        matched = _match_cards(con, text)
+        if card_id is not None:
+            row = con.execute(
+                "SELECT id, card_key, player_name, version_name FROM cards WHERE id=?",
+                (card_id,),
+            ).fetchone()
+            matched = [dict(row)] if row else []
+        else:
+            matched = _match_cards(con, text)
         card_ids = [c["id"] for c in matched]
 
         # Enrich each card with price data

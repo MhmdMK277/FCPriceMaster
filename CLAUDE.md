@@ -8,10 +8,10 @@ Runs on Windows, single user (the owner). Never deploy publicly.
 ## Read before every session (in this order)
 1. **This file (CLAUDE.md)** — rules and stack
 2. **ROADMAP.md** — current phase, open tasks, what's done
-3. **SESSION_LOG.md** — latest entry, to see where we stopped and why
+3. **SESSION_LOG.md** — latest entry, to see where we stopped and why. Holds sessions 31+; sessions 1–30 are in **SESSION_LOG_ARCHIVE.md** (consult only when digging into old history).
 
 ## Update at end of every session (non-negotiable)
-1. Append a new entry to **SESSION_LOG.md** using the template at the bottom of that file. Fill in: date, goal, done, next, gotchas, changed files.
+1. Append a new entry to **SESSION_LOG.md** (sessions 31+; never append to the archive) using the template in that file. Fill in: date, goal, done, next, gotchas, changed files.
 2. In **ROADMAP.md**, mark completed tasks `[x]`, in-progress `[~]`, blocked `[!]`.
 3. If any architectural decision was made, add a short note to **ARCHITECTURE.md** under a dated "Decisions" heading.
 

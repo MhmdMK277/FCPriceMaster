@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('fcdb', {
   askLLM:           (opts) => ipcRenderer.invoke('db:askLLM', opts),
   askMultiModel:    (opts) => ipcRenderer.invoke('db:askMultiModel', opts),
   getProviderAvailability: () => ipcRenderer.invoke('db:getProviderAvailability'),
+  getProviderHealth: () => ipcRenderer.invoke('db:getProviderHealth'),
   buildAskContext:   (opts) => ipcRenderer.invoke('db:buildAskContext', opts),
   callSingleProvider:(opts) => ipcRenderer.invoke('db:callSingleProvider', opts),
   logAskMulti:       (opts) => ipcRenderer.invoke('db:logAskMulti', opts),

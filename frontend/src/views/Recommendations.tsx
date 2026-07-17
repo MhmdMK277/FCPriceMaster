@@ -110,6 +110,9 @@ export function Recommendations({ platform }: { platform: string }) {
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
   const [providerId, setProviderId] = useState(() => localStorage.getItem('rec_provider_id') || 'haiku');
+  // Per-provider endpoint health from the scheduler's NVIDIA probe.
+  // Unknown (absent) = healthy; only an explicit false disables an option.
+  const [providerHealth, setProviderHealth] = useState<Record<string, boolean>>({});
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function showToast(t: Toast) {
@@ -145,6 +148,17 @@ export function Recommendations({ platform }: { platform: string }) {
   useEffect(() => {
     localStorage.setItem('rec_provider_id', providerId);
   }, [providerId]);
+
+  useEffect(() => {
+    const fcdb = (window as any).fcdb;
+    if (!fcdb || typeof fcdb.getProviderHealth !== 'function') return;
+    const fetchHealth = () => {
+      fcdb.getProviderHealth().then(setProviderHealth).catch(() => { /**/ });
+    };
+    fetchHealth();
+    const t = setInterval(fetchHealth, 60_000);
+    return () => clearInterval(t);
+  }, []);
 
   async function handleRefresh() {
     if (providerId === 'haiku' && budget && !budget.can_generate) return;
@@ -215,7 +229,19 @@ export function Recommendations({ platform }: { platform: string }) {
             value={providerId}
             onChange={e => setProviderId(e.target.value)}
           >
-            {MODEL_OPTIONS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+            {MODEL_OPTIONS.map(m => {
+              const unhealthy = providerHealth[m.id] === false;
+              return (
+                <option
+                  key={m.id}
+                  value={m.id}
+                  disabled={unhealthy}
+                  title={unhealthy ? 'Temporarily unavailable — NVIDIA endpoint offline' : undefined}
+                >
+                  {m.label}{unhealthy ? ' (offline)' : ''}
+                </option>
+              );
+            })}
           </select>
         </label>
         <div title={budgetExhausted ? `Daily AI budget used ($${budget?.cap_usd.toFixed(2)}). Resets at midnight UTC.` : undefined}>

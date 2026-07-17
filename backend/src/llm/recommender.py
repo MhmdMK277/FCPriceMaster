@@ -81,6 +81,8 @@ _FODDER_SYSTEM_PROMPT = """You are FCPriceMaster. You are evaluating whether a s
 
 Fodder BUY criteria: price near 7-day low AND an SBC or promo expected within 14 days that will consume this rating.
 
+IMPORTANT: Fodder prices are in coins, not thousands. A rating-88 fodder card at 850 coins should be written as 850, NOT 850,000 or 850K. All prices in this system are raw coin values — echo them exactly as given.
+
 Signals tagged irl_transfer or irl_result are real-world football news, not FUT market data. A real-world transfer fee (e.g. €150M to Real Madrid) does NOT indicate a FUT card price. A high-profile IRL move may create mild in-game demand — treat as weak positive sentiment only, never as price evidence. Signals tagged promo_leak are high priority.
 
 Respond in this exact JSON format:
@@ -692,7 +694,9 @@ def generate_recommendations(
             days = _days_since_last_rec(con, card_id, platform)
             card["_days_since_rec"] = days
 
-            context = build_context(card["player_name"], platform, db_path)
+            # Pin the exact card: name-based matching returns every version of
+            # the player and mentioned_cards[0] could be a different card.
+            context = build_context(card["player_name"], platform, db_path, card_id=card_id)
             user_message = _format_card_message(card, context, momentum)
 
             try:
@@ -841,6 +845,17 @@ def _fodder_recommendations(
         _log_call(db_path, call_model, in_tok, out_tok, user_message, json.dumps(verdict), feature="autonomous")
 
         if float(verdict.get("confidence", 0)) < 60 or verdict.get("verdict") in ("hold", "avoid"):
+            continue
+
+        # Hallucination guard: Mistral once turned "850" in the prompt into a
+        # target of 850,000. A fodder buy target an order of magnitude above
+        # the actual cheapest BIN is never real — drop it, never insert.
+        suggested = verdict.get("suggested_buy_price")
+        if suggested and cheapest_now and suggested > cheapest_now * 10:
+            logger.warning(
+                "Fodder hallucination detected: LLM said %s for rating %d, actual is %d. Skipping.",
+                suggested, rating, cheapest_now,
+            )
             continue
 
         verdict["reasoning"] = f"[Fodder rating {rating}] " + verdict.get("reasoning", "")

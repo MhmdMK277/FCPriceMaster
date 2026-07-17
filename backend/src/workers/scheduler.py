@@ -29,6 +29,8 @@ from src.scrapers.futgg import FutGGScraper
 from src.workers.reddit_ingest import job_reddit_new, job_reddit_hot
 from src.workers.ea_ingest import job_ea_news
 from src.workers.signal_tagger import job_signal_tagger
+from src.llm.ask import _load_config
+from src.llm.providers.registry import probe_all_providers
 from src.llm.recommender import (
     generate_recommendations, evaluate_outcomes,
     _get_candidates, _has_worthy_candidates,
@@ -144,6 +146,28 @@ async def job_recommendations(platform: str, db_path: str) -> None:
     except Exception as exc:
         elapsed = (datetime.now(timezone.utc) - start).total_seconds()
         logger.error("JOB FAILED recommendations_%s after %.1fs — %s: %s", platform, elapsed, type(exc).__name__, exc)
+
+
+# Provider health cache. Refreshed by job_probe_providers every 30 min so the
+# UI can poll POST /probe-providers without hammering NVIDIA. A model NVIDIA
+# pulls (kimi-k2.6, 2026-07-17) shows healthy=False and auto-restores when the
+# endpoint comes back.
+_provider_health: dict[str, bool] = {}
+
+
+async def job_probe_providers() -> None:
+    """Probe all LLM providers and cache the results."""
+    global _provider_health
+    logger.info("JOB START  provider_probe")
+    try:
+        _provider_health = await probe_all_providers()
+        unhealthy = sorted(pid for pid, ok in _provider_health.items() if not ok)
+        logger.info(
+            "JOB DONE   provider_probe — %d providers, unhealthy: %s",
+            len(_provider_health), ", ".join(unhealthy) or "none",
+        )
+    except Exception as exc:
+        logger.error("JOB FAILED provider_probe — %s: %s", type(exc).__name__, exc)
 
 
 async def job_outcome_evaluator(db_path: str) -> None:
@@ -393,6 +417,17 @@ def build_scheduler(
         max_instances=1,
     )
 
+    scheduler.add_job(
+        job_probe_providers,
+        trigger=IntervalTrigger(minutes=30, timezone="UTC"),
+        id="provider_probe",
+        name="LLM provider health probe",
+        next_run_time=now + timedelta(seconds=20),
+        misfire_grace_time=600,
+        coalesce=True,
+        max_instances=1,
+    )
+
     # --- Card coverage tier jobs (PC-primary; staggered to avoid hammering FUT.GG) ---
     # Tier 1: 85-91 rated, top 200, every 30 min — primary trading targets
     scheduler.add_job(
@@ -561,6 +596,17 @@ async def _http_trigger_server(db_path: str, scraper: FutGGScraper | None = None
                 except Exception as exc2:
                     result = {"status": "error", "error": str(exc2)}
                 resp_body = _json.dumps(result).encode("utf-8")
+                header = (
+                    f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                    f"Access-Control-Allow-Origin: *\r\nContent-Length: {len(resp_body)}\r\n\r\n"
+                ).encode("utf-8")
+                resp = header + resp_body
+            elif "POST /probe-providers" in first_line:
+                # Serve the 30-min cache; probe inline only when the cache is
+                # still empty (endpoint hit before the first scheduled probe).
+                if not _provider_health:
+                    await job_probe_providers()
+                resp_body = _json.dumps(_provider_health).encode("utf-8")
                 header = (
                     f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
                     f"Access-Control-Allow-Origin: *\r\nContent-Length: {len(resp_body)}\r\n\r\n"

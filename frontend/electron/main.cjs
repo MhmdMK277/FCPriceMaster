@@ -747,6 +747,25 @@ ipcMain.handle('db:dismissRecommendation',        (_e, opts) => dismissRecommend
 ipcMain.handle('db:getRecommendationStats',       (_e, opts) => getRecommendationStats(openDb(), opts));
 ipcMain.handle('db:getRecommendationBudgetStatus', ()        => getRecommendationBudgetStatus(openDb()));
 
+// Provider health: mirrors the scheduler's cached 30-min NVIDIA probe.
+// Empty until the scheduler responds — renderers treat unknown as healthy.
+const providerHealth = new Map();
+
+async function refreshProviderHealth() {
+  try {
+    const res = await fetch('http://127.0.0.1:8765/probe-providers', { method: 'POST' });
+    if (!res.ok) return false;
+    const data = await res.json();
+    providerHealth.clear();
+    for (const [pid, healthy] of Object.entries(data)) providerHealth.set(pid, healthy);
+    return providerHealth.size > 0;
+  } catch {
+    return false; // scheduler not up yet — caller retries
+  }
+}
+
+ipcMain.handle('db:getProviderHealth', () => Object.fromEntries(providerHealth));
+
 ipcMain.handle('db:triggerRecommendations', async (_e, { platform, provider_id } = {}) => {
   try {
     const body = JSON.stringify({ platform: platform || 'pc', provider_id: provider_id || 'haiku' });
@@ -958,6 +977,18 @@ app.whenReady().then(() => {
     console.log('[main] AUTO_START_BACKEND=false — dev.ps1 owns worker spawning');
   }
   createWindow();
+
+  // Provider health probe: the scheduler needs ~25s to bind :8765 and finish
+  // its first probe, so retry until we get a non-empty result, then settle
+  // into the 30-min cadence matching the scheduler's own re-probe.
+  let probeAttempts = 0;
+  const probeKickoff = setInterval(async () => {
+    probeAttempts += 1;
+    const ok = await refreshProviderHealth();
+    if (ok || probeAttempts >= 20) clearInterval(probeKickoff);
+  }, 15_000);
+  refreshProviderHealth();
+  setInterval(refreshProviderHealth, 30 * 60_000);
 });
 
 app.on('window-all-closed', () => {

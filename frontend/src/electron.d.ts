@@ -21,6 +21,7 @@ declare global {
       askLLM(opts: { text: string; platform: Platform }): Promise<AskResult>;
       askMultiModel(opts: { trade_call: string; provider_ids: string[]; platform?: Platform; image_b64?: string | null }): Promise<MultiModelResult>;
       getProviderAvailability(): Promise<ProviderAvailability>;
+      getProviderHealth(): Promise<Record<string, boolean>>;
       buildAskContext(opts: { trade_call: string; platform: Platform }): Promise<{ userMessage: string; context_info: { cards: string[]; signals_count: number } }>;
       callSingleProvider(opts: { provider_id: string; user_message: string; image_b64?: string | null; input_text?: string; session_id?: string }): Promise<import('./lib/types').MultiModelVerdict>;
       logAskMulti(opts: { input_text: string; verdicts: import('./lib/types').MultiModelVerdict[] }): Promise<{ ok: boolean }>;

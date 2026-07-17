@@ -36,6 +36,46 @@ class NvidiaProvider(BaseProvider):
         key = self._get_key()
         return bool(key and key.startswith("nvapi-"))
 
+    async def health_check(self) -> bool:
+        """Probe the model endpoint with a real minimal completion.
+
+        NVIDIA's /v1/models still lists models whose backing function has been
+        pulled for this account (kimi-k2.6 404s that way as of 2026-07-17), so
+        the only trustworthy probe is a completion call.
+
+        Probe design, measured 2026-07-18:
+        - A pulled endpoint fails FAST (404 in 0.2s) — that is the signal we
+          are after. Any HTTP error status → unhealthy.
+        - A timeout means cold-start, not pulled: DeepSeek V4 Pro takes
+          60-120s on first hit and reasoning models stall on tiny max_tokens
+          (1-512 hung >20s; 2000 answered in 3.4s). So the probe uses
+          max_tokens=2000 (cap, not target — free tier, replies are short)
+          and treats a 10s timeout as HEALTHY (slow-but-alive), so a cold
+          model is never greyed out in the UI.
+        """
+        key = self._get_key()
+        if not key:
+            return False
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    f"{_NVIDIA_BASE_URL}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": self.model_id,
+                        "messages": [{"role": "user", "content": "ok"}],
+                        "max_tokens": 2000,
+                    },
+                )
+            return 200 <= resp.status_code < 300
+        except httpx.TimeoutException:
+            return True  # cold-start, not a pulled endpoint
+        except httpx.HTTPError:
+            return False
+
 
 class NvidiaTextProvider(NvidiaProvider):
     """Text-only NVIDIA NIM provider, parameterized by model_id."""

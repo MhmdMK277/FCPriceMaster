@@ -75,7 +75,11 @@ a session-36 fix; don't regress it.)
 - Providers: Anthropic Claude Haiku (paid, budget-capped) + 5 free NVIDIA NIM
   models (OpenAI-compatible, one `NVIDIA_API_KEY`):
   `deepseek-ai/deepseek-v4-pro` (slow cold-start, 60-120s),
-  `moonshotai/kimi-k2.6` (fast, occasionally degenerates at temp 0),
+  `moonshotai/kimi-k2.6` (**TEMPORARILY UNAVAILABLE** — NVIDIA endpoint 404
+  "Function not found for account" as of 2026-07-17, even though /v1/models
+  still lists it. Kept in registry; the 30-min health probe greys it in the
+  UI and auto-restores it when NVIDIA re-enables the endpoint. Health-check
+  NVIDIA models with a real completion, not the model list),
   `qwen/qwen3-next-80b-a3b-instruct`, `mistralai/mistral-small-4-119b-2603`
   (also the vision model), `openai/gpt-oss-120b` (reasoning model — needs
   `max_tokens >= 1500` or content comes back empty).
