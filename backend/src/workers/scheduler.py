@@ -131,6 +131,31 @@ async def job_fodder_sweep(scraper: FutGGScraper, db_path: str) -> None:  # noqa
         logger.error("JOB FAILED fodder_sweep after %.1fs — %s: %s", elapsed, type(exc).__name__, exc)
 
 
+# Process-level lock: the scheduled job and the HTTP trigger both pass the
+# per-card 10h recent-rec guard BEFORE either writes, so overlapping runs can
+# insert contradictory recs for the same card (session 38: avoid id=1140 and
+# buy id=1142 on the same card, seconds apart). One scheduler process owns
+# port 8765, so a single asyncio lock covers every in-process caller.
+_rec_lock = asyncio.Lock()
+
+
+async def run_recommendations_safe(
+    platform: str, db_path: str, provider_id: str
+) -> list[dict] | None:
+    """Run generate_recommendations under _rec_lock.
+
+    Returns None IMMEDIATELY (no waiting) when a run is already in progress.
+    The locked() pre-check is race-free here: all callers share one event
+    loop and an uncontended Lock.acquire() does not yield control.
+    """
+    if _rec_lock.locked():
+        return None
+    async with _rec_lock:
+        return await asyncio.to_thread(
+            generate_recommendations, platform, db_path, 3, provider_id
+        )
+
+
 async def job_recommendations(platform: str, db_path: str) -> None:
     """Generate autonomous recommendations for one platform."""
     start = datetime.now(timezone.utc)
@@ -140,7 +165,10 @@ async def job_recommendations(platform: str, db_path: str) -> None:
     provider_id = str(_load_config().get("scheduled_provider", "haiku"))
     logger.info("JOB START  recommendations_%s via %s", platform, provider_id)
     try:
-        recs = await asyncio.to_thread(generate_recommendations, platform, db_path, 3, provider_id)
+        recs = await run_recommendations_safe(platform, db_path, provider_id)
+        if recs is None:
+            logger.info("JOB SKIP   recommendations_%s — run already in progress", platform)
+            return
         elapsed = (datetime.now(timezone.utc) - start).total_seconds()
         logger.info("JOB DONE   recommendations_%s — %d recs in %.1fs", platform, len(recs), elapsed)
     except Exception as exc:
@@ -537,7 +565,13 @@ async def _http_trigger_server(db_path: str, scraper: FutGGScraper | None = None
                 logger.info("Manual trigger skip (%s): %s", platform, reason)
                 return {"status": "ok", "skipped": True, "reason": reason, "recs_added": 0}
 
-            recs = await asyncio.to_thread(generate_recommendations, platform, db_path, 3, provider_id)
+            recs = await run_recommendations_safe(platform, db_path, provider_id)
+            if recs is None:
+                logger.info("Manual trigger skip (%s): run already in progress", platform)
+                return {
+                    "status": "skipped", "skipped": True,
+                    "reason": "recommendation run already in progress", "recs_added": 0,
+                }
             logger.info("Manual trigger done: %d recs for %s via %s", len(recs), platform, provider_id)
             return {"status": "ok", "skipped": False, "reason": "", "recs_added": len(recs)}
         except Exception as exc:

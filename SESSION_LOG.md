@@ -23,6 +23,25 @@ This file holds sessions 31 and later. Sessions 1–30 live in **SESSION_LOG_ARC
 
 <!-- Entries go below this line, newest first -->
 
+### 2026-07-18 — session 39
+**Goal:** Fix the concurrent recommendation dedup race (scheduled + manual runs both pass the 10h guard before either writes).
+
+**Done:**
+- **Process-level rec lock:** `_rec_lock = asyncio.Lock()` + `run_recommendations_safe()` in scheduler.py; both `job_recommendations` (scheduled) and `_run_recs_with_result` (HTTP trigger) go through it. A second caller returns IMMEDIATELY — `locked()` pre-check instead of the blocking `async with`-only pattern, since the requirement is skip-not-queue (race-free: single event loop, uncontended acquire doesn't yield). HTTP skip response `{"status": "skipped", "skipped": true, "reason": "recommendation run already in progress", "recs_added": 0}` keeps `skipped: true` so the existing Recommendations toast path works unchanged.
+- **Live verification:** two POSTs 0.1s apart — call A ran (9.5s, 3 recs), call B skipped in 0.6s with the exact reason string. Bonus: the scheduler's own startup `recommendations_pc` job fired at +30s during call A and logged `JOB SKIP — run already in progress` — the precise session-38 race, deflected live. No same-card duplicates in the window (session 38 had avoid+buy ids 1140/1142).
+- **Date-dependent test fix:** FUTTIES went ACTIVE today (`futties_window_start: "07-18"`), so `_futties_85_recommendation` began appending a structural rec and broke `test_generate_recommendations_filters_hold_and_low_confidence` (assert 2 == 1) — a latent bug that surfaced at date rollover, unrelated to the lock. Patched `_calendar_context` in that test to a neutral calendar. 174/174 pass.
+
+**Next:** Owner UI walkthrough (Phase 3 sign-off) still pending. Watch for other tests reading the real release_calendar.yaml — any exact-count assertion can break when a promo window opens (only this one failed today).
+
+**Gotchas:**
+- The lock is per-process only — correct because port 8765 enforces a single scheduler; direct `generate_recommendations` calls from standalone scripts (like session 38's test) bypass it.
+- FUTTIES is active as of today: every run now appends the structural 85-fodder rec and reasonings lean avoid-gold; expected behavior, not a regression.
+
+**Changed files:**
+- `backend/src/workers/scheduler.py` (_rec_lock, run_recommendations_safe, both call sites)
+- `backend/tests/test_recommender.py` (calendar isolation in the filter test)
+- `SESSION_LOG.md`, `ROADMAP.md`
+
 ### 2026-07-18 — session 38
 **Goal:** Kimi health probe (keep in registry, grey in UI), context-builder name-collision fix, fodder hallucination guard, skill wording update, verify + push.
 

@@ -420,9 +420,17 @@ def test_generate_recommendations_filters_hold_and_low_confidence(db_with_cards)
     }))]
     low_conf_response.usage = MagicMock(input_tokens=100, output_tokens=50)
 
+    # _calendar_context patched: the real release_calendar.yaml turns FUTTIES
+    # active from 07-18, which appends the structural 85-fodder rec and breaks
+    # the exact count this test asserts. Calendar behavior is tested elsewhere.
     with patch("src.llm.recommender._load_api_key", return_value="test-key"), \
          patch("src.llm.recommender._check_daily_cap", return_value=(0.0, 0)), \
          patch("src.llm.recommender._log_call"), \
+         patch("src.llm.recommender._calendar_context", return_value={
+             "today": "2026-01-01", "days_to_next_launch": None,
+             "end_of_cycle_phase": "none", "futties_active": False,
+             "futties_days_until": None, "promos": [],
+         }), \
          patch("anthropic.Anthropic") as mock_cls:
         mock_client = MagicMock()
         mock_cls.return_value = mock_client
