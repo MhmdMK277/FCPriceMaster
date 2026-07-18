@@ -23,6 +23,29 @@ This file holds sessions 31 and later. Sessions 1–30 live in **SESSION_LOG_ARC
 
 <!-- Entries go below this line, newest first -->
 
+### 2026-07-18 — session 42
+**Goal:** Re-tag full signal history with the fixed word-boundary tagger, confirm the stats-bar fix, coverage health check.
+
+**Done:**
+- **Stats bar confirmed:** the spec's `action` column doesn't exist — the column is `call`, values lowercase (`avoid: 22, buy: 19`), so no LOWER() was ever needed; the real fix was session 41's COALESCE (NULL SUM over empty outcomes JOIN). Live CDP check reads "Buys: 0 / Avoids: 0" — numeric, not blank.
+- **Historical re-tag:** added `--backfill` mode to signal_tagger (`uv run python -m src.workers.signal_tagger --backfill`). It WIPES signal_card_tags and rebuilds — tags are deterministic derived data, and merely resetting `tagged_at` would have preserved pre-fix false positives for every player other than the purged Rice/Son. Result: 5,879 signals re-processed, 640 got ≥1 tag, **821 total tag rows (was 4,698 — an 83% reduction)**. Rice: 85 → **11**. Son: 84 → **21**. Bellingham 4, Messi 62, Mbappé 45.
+- **Residual limitation (spot-check, logged not fixed):** word boundaries can't disambiguate homographs — "my son has gotten into soccer" still tags Son (Heung-min). Rice's samples are clean (POTS vote lists). Fixing this class needs context/NER, not regex.
+- **Coverage check: 40 fresh cards in 24h of 4,004 tradeable (1.0%) — below the 200 threshold, investigated:**
+  - The premise "running since session 40" is off — every restart today reset the uptime window, and the 06:00 UTC daily full sweep has never fired while the app was up (app was dead June 13 → July 17, and today's uptime windows never crossed 06:00 UTC). It will fire ~06:00 UTC today if the app stays up.
+  - **Tier scraper root cause (live probe):** the cheapest-first tier page serves only 30 anchors on page 1, now dominated by evolution cards (`LEVEL 10/11` badges) and `EXTINCT` — FUTTIES evo flood. No valid-price tradeable cards on page 1 → `0 tradeable cards persisted` every run since June (13.4s job = 12s price-wait timing out). Tier 3 (92+) occasionally lands ~7 (fewer evos up there). The parser is fine — the full sweep paginates and is unaffected. **Fix candidate for next session: make the tier scraper paginate until it collects N valid prices.**
+- 174/174 tests pass.
+
+**Next:** (1) Watch the 06:00/06:30 UTC full sweep actually fire and rebuild coverage — if it does, 24h coverage should jump to thousands. (2) Tier scraper pagination fix. (3) Owner UI walkthrough still pending.
+
+**Gotchas:**
+- `recommendations` has no `action` column (it's `call`) and `scraper_health` has no `rows_written` (query the schema before writing audit SQL).
+- The signal tagger's on-demand price fetch (job wrapper) is NOT triggered by the standalone backfill — run_tagging alone doesn't scrape, so a mass backfill won't hammer FUT.GG.
+
+**Changed files:**
+- `backend/src/workers/signal_tagger.py` (run_backfill + `__main__` with --backfill)
+- DB: signal_card_tags rebuilt (4,698 → 821 rows)
+- `SESSION_LOG.md`
+
 ### 2026-07-18 — session 41
 **Goal:** Three targeted fixes from session 40's browser test: Rice word-boundary matching, blank stats-bar values, rating-81 fodder coverage.
 

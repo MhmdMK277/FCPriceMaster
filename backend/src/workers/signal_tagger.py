@@ -297,6 +297,43 @@ def run_tagging(db_path: str, batch_size: int = _BATCH_SIZE) -> tuple[int, list[
         con.close()
 
 
+def run_backfill(db_path: str, batch_size: int = 200) -> tuple[int, int]:
+    """Re-tag the full signal history with the current (word-boundary) tagger.
+
+    Tags are derived data (signals × aliases, deterministic), so the cleanest
+    backfill wipes signal_card_tags and rebuilds — otherwise pre-fix false
+    positives for players other than the purged ones would survive forever.
+    Returns (signals_processed, signals_with_tags).
+    """
+    con = sqlite3.connect(db_path)
+    try:
+        deleted = con.execute("DELETE FROM signal_card_tags").rowcount
+        reset = con.execute("UPDATE signals SET tagged_at = NULL").rowcount
+        con.commit()
+        logger.info("Backfill: cleared %d old tags, reset tagged_at on %d signals", deleted, reset)
+    finally:
+        con.close()
+
+    processed = 0
+    with_tags = 0
+    batch_no = 0
+    while True:
+        count, _keys = run_tagging(db_path, batch_size=batch_size)
+        with_tags += count
+        con = sqlite3.connect(db_path)
+        remaining = con.execute(
+            "SELECT COUNT(*) FROM signals WHERE raw_text IS NOT NULL AND tagged_at IS NULL"
+        ).fetchone()[0]
+        con.close()
+        batch_no += 1
+        processed = reset - remaining
+        if batch_no % 5 == 0 or remaining == 0:
+            logger.info("Backfill: %d/%d processed, %d remaining", processed, reset, remaining)
+        if remaining == 0:
+            break
+    return processed, with_tags
+
+
 async def job_signal_tagger(db_path: str) -> None:
     """APScheduler job wrapper for signal tagging + on-demand price fetch."""
     import asyncio
@@ -317,3 +354,15 @@ async def job_signal_tagger(db_path: str) -> None:
                     await scraper.fetch_card_on_demand(card_key, platform)  # type: ignore[arg-type]
     except Exception as exc:
         logger.error("JOB FAILED signal_tagger — %s: %s", type(exc).__name__, exc)
+
+
+if __name__ == "__main__":
+    import sys
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    if "--backfill" in sys.argv:
+        processed, with_tags = run_backfill(_DB_PATH)
+        logger.info("Backfill complete: %d signals processed, %d got at least one tag", processed, with_tags)
+    else:
+        count, keys = run_tagging(_DB_PATH)
+        logger.info("One-off tagging run: %d signals tagged (%d card keys)", count, len(keys))
