@@ -31,16 +31,21 @@ def _db_path_from_env() -> str:
 # ---------------------------------------------------------------------------
 
 def _match_cards(con: sqlite3.Connection, text: str) -> list[dict[str, Any]]:
-    """Return cards mentioned in text using aliases + fallback name substring."""
-    text_lower = text.lower()
+    """Return cards mentioned in text — word-boundary matched, never substring.
+
+    Substring matching tagged 'Rice' from the word 'price' (session 40);
+    _name_matches requires the name to appear as a whole word.
+    """
+    from src.workers.signal_tagger import _name_matches
+
     matched: dict[int, dict[str, Any]] = {}
 
-    # Check card_aliases first (exact alias match)
+    # Check card_aliases first (word-bounded alias match)
     aliases = con.execute(
         "SELECT alias, card_id FROM card_aliases"
     ).fetchall()
     for alias, card_id in aliases:
-        if alias.lower() in text_lower and card_id not in matched:
+        if card_id not in matched and _name_matches(alias, text):
             row = con.execute(
                 "SELECT id, card_key, player_name, version_name FROM cards WHERE id=?",
                 (card_id,),
@@ -48,25 +53,24 @@ def _match_cards(con: sqlite3.Connection, text: str) -> list[dict[str, Any]]:
             if row:
                 matched[card_id] = dict(zip(["id", "card_key", "player_name", "version_name"], row))
 
-    # Fallback: substring match on player_name (full name or any significant part)
+    # Fallback: word-boundary match on player_name (full name or any significant part)
     cards = con.execute(
         "SELECT id, card_key, player_name, version_name FROM cards"
     ).fetchall()
     for card_id, card_key, player_name, version_name in cards:
         if card_id in matched:
             continue
-        name_lower = player_name.lower()
         # Full name match
-        if len(name_lower) >= 4 and name_lower in text_lower:
+        if len(player_name) >= 4 and _name_matches(player_name, text):
             matched[card_id] = {
                 "id": card_id, "card_key": card_key,
                 "player_name": player_name, "version_name": version_name,
             }
             continue
         # Individual word match (last name or first name, ≥5 chars to avoid collisions)
-        parts = name_lower.split()
+        parts = player_name.split()
         for part in parts:
-            if len(part) >= 5 and part in text_lower:
+            if len(part) >= 5 and _name_matches(part, text):
                 matched[card_id] = {
                     "id": card_id, "card_key": card_key,
                     "player_name": player_name, "version_name": version_name,

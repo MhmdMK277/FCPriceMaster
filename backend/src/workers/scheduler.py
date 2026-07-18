@@ -116,12 +116,15 @@ async def job_trending(scraper: FutGGScraper, platform: str) -> None:
 
 
 async def job_fodder_sweep(scraper: FutGGScraper, db_path: str) -> None:  # noqa: ARG001
-    """Sweep fodder prices for ratings 82-91 on both platforms."""
+    """Sweep fodder prices for ratings 81-93 on both platforms."""
     start = datetime.now(timezone.utc)
     logger.info("JOB START  fodder_sweep")
     try:
+        # 81-93: the old range(82, 92) silently excluded 81, 92 and 93 —
+        # those ratings froze at their April 26 snapshots while the Fodder
+        # UI kept displaying them (session 40 found 81 at 1991h stale).
         total = await scraper.fodder_sweep(
-            ratings=list(range(82, 92)),
+            ratings=list(range(81, 94)),
             platforms=["pc", "console"],
         )
         elapsed = (datetime.now(timezone.utc) - start).total_seconds()

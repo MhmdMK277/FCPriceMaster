@@ -255,14 +255,16 @@ const GET_RECS_ALL_SQL = `
   ORDER BY r.ts_utc DESC, r.confidence DESC
   LIMIT ?`;
 
+// COALESCE: SUM over zero rows is NULL, which React renders as a blank
+// ("Buys: " with no number, session 40). Zero evaluated must read as 0.
 const REC_STATS_SQL = `
   SELECT
     COUNT(*) AS total_evaluated,
-    SUM(CASE WHEN o.verdict = 'correct'   THEN 1 ELSE 0 END) AS correct,
-    SUM(CASE WHEN o.verdict = 'incorrect' THEN 1 ELSE 0 END) AS incorrect,
-    SUM(CASE WHEN o.verdict = 'neutral'   THEN 1 ELSE 0 END) AS neutral,
-    SUM(CASE WHEN r.call = 'buy'   THEN 1 ELSE 0 END) AS buy_total,
-    SUM(CASE WHEN r.call = 'avoid' THEN 1 ELSE 0 END) AS avoid_total
+    COALESCE(SUM(CASE WHEN o.verdict = 'correct'   THEN 1 ELSE 0 END), 0) AS correct,
+    COALESCE(SUM(CASE WHEN o.verdict = 'incorrect' THEN 1 ELSE 0 END), 0) AS incorrect,
+    COALESCE(SUM(CASE WHEN o.verdict = 'neutral'   THEN 1 ELSE 0 END), 0) AS neutral,
+    COALESCE(SUM(CASE WHEN r.call = 'buy'   THEN 1 ELSE 0 END), 0) AS buy_total,
+    COALESCE(SUM(CASE WHEN r.call = 'avoid' THEN 1 ELSE 0 END), 0) AS avoid_total
   FROM recommendations r
   JOIN outcomes o ON o.recommendation_id = r.id
   WHERE r.ts_utc >= datetime('now', ? || ' days')`;

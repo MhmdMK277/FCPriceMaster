@@ -23,6 +23,32 @@ This file holds sessions 31 and later. Sessions 1–30 live in **SESSION_LOG_ARC
 
 <!-- Entries go below this line, newest first -->
 
+### 2026-07-18 — session 41
+**Goal:** Three targeted fixes from session 40's browser test: Rice word-boundary matching, blank stats-bar values, rating-81 fodder coverage.
+
+**Done:**
+- **Fix 1 (Rice bug), all three match paths:** the tagger's real mechanism was rapidfuzz token matching (token "price" vs alias "rice" scores ~89 ≥ threshold 85), not plain substring. Added `_name_matches` (casefold + accent-fold + `\b` boundary) to signal_tagger; fuzzy is now a candidate finder whose match must ALSO appear word-bounded in the text. Same treatment in `context_builder._match_cards` (aliases, full names, name parts — imports the same helper) and `buildAskContext` in main.cjs (`foldName`/`nameMatches` with unicode lookarounds so 'mbappe' still matches 'Mbappé').
+- **Tag cleanup:** audited by "any of the card's aliases/name-parts word-bounded in text" (a plain `\bRice\b` check would delete legit 'Declan' tags). **Rice: 74/85 tags were false positives (87.1%) — deleted. Son: 72/84 (85.7%) — deleted** ("soon"/"season"). Mane/Eze/Luis: zero tags. Note: `signal_card_tags` has no `id` column — deletes by (signal_id, card_id) pair.
+- **Fix 2 (blank Buys/Avoids):** NOT case sensitivity — `call` values are lowercase and match the query. `REC_STATS_SQL` JOINs outcomes; with 0 evaluated rows `SUM()` returns NULL and React renders null as blank. COALESCE(…, 0) on all five aggregates. Verified live via CDP: stats bar now reads "Buys: 0 / Avoids: 0".
+- **Fix 3 (fodder 81):** scheduler's `job_fodder_sweep` passed `range(82, 92)`, silently excluding 81 AND 92/93 (all frozen at April 26; the scraper's own default and parser already handled 81–93). Changed to `range(81, 94)`. Verified live: next sweep wrote 13 ratings × 2 platforms, 81/92/93 fresh at 2026-07-18T03:08Z (81 cheapest: 350 coins).
+- **Verification:** 174/174 tests; spec's word-boundary assertion block passes; `build_context("The price is dropping…")` matches NO cards while "Rice is at 450k" matches only Rice; JS `nameMatches` tested by extracting the shipped functions from main.cjs (6/6 incl. accent case); stats bar read from the real UI over CDP.
+
+**Next:** Owner UI walkthrough (Phase 3 sign-off) still pending. Consider re-running `tagged_at` reset for historical signals so the fixed tagger can re-tag them cleanly (old signals keep their sparse-but-clean tags now that FPs are purged).
+
+**Gotchas:**
+- The fuzzy threshold alone can never fix this class: "price"→"rice" and "soon"→"son" both clear 85. Word-boundary confirmation is the correct gate — keep it if the threshold is ever tuned.
+- JS `\b` doesn't work adjacent to accented letters; the unicode lookarounds `(?<![\p{L}\p{N}])…(?![\p{L}\p{N}])` with 'u' flag are required.
+- Editing unicode-escape regexes via tooling that renders combining chars invisibly is a trap — the main.cjs foldName range had to be written via char-code construction.
+
+**Changed files:**
+- `backend/src/workers/signal_tagger.py` (_fold, _name_matches, fuzzy confirm gate)
+- `backend/src/llm/context_builder.py` (word-boundary _match_cards)
+- `frontend/electron/main.cjs` (foldName, nameMatches, buildAskContext)
+- `frontend/electron/db-queries.cjs` (COALESCE in REC_STATS_SQL)
+- `backend/src/workers/scheduler.py` (fodder sweep range 81–93)
+- DB: 146 false-positive signal_card_tags deleted (74 Rice, 72 Son)
+- `SESSION_LOG.md`, `ROADMAP.md`
+
 ### 2026-07-18 — session 40
 **Goal:** Real browser testing of every UI view with Playwright — observe and report only, no app-code changes.
 

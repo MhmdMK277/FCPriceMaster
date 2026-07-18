@@ -146,14 +146,26 @@ function checkDailyCap(db, capUsd) {
   }
 }
 
+// Casefold + strip accents so 'Mbappé' matches 'mbappe'.
+function foldName(s) {
+  return s.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+// Word-boundary name match — 'Rice' must NOT match inside 'price' (the
+// substring version tagged every "price" mention to Declan Rice, session 40).
+function nameMatches(name, foldedText) {
+  const escaped = foldName(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'u').test(foldedText);
+}
+
 function buildAskContext(db, text, platform) {
-  // Match cards by name substring
+  // Match cards by word-bounded name, never substring
   const allCards = db.prepare('SELECT id, card_key, player_name, version_name FROM cards').all();
-  const textLower = text.toLowerCase();
+  const foldedText = foldName(text);
   const mentionedCards = [];
   for (const card of allCards) {
-    const name = card.player_name.toLowerCase();
-    if (name.length >= 4 && textLower.includes(name)) {
+    const name = card.player_name;
+    if (name.length >= 4 && nameMatches(name, foldedText)) {
       const price = db.prepare(
         `SELECT bin_price, ts_utc FROM price_snapshots
          WHERE card_id=? AND platform=? AND bin_price IS NOT NULL

@@ -10,10 +10,36 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def _fold(s: str) -> str:
+    """Casefold + strip accents so 'Mbappé' matches 'mbappe'."""
+    folded = (
+        unicodedata.normalize("NFKD", s)
+        .encode("ascii", "ignore")
+        .decode("ascii")
+        .lower()
+    )
+    return folded or s.lower()
+
+
+def _name_matches(name: str, text: str) -> bool:
+    """Word-boundary name match — 'Rice' must NOT match inside 'price'.
+
+    Session 40 found the fuzzy tagger matching the token 'price' to the alias
+    'rice' (token_sort_ratio ≈ 89 ≥ threshold 85), so any signal mentioning a
+    price got tagged to Declan Rice. Every fuzzy candidate must now also
+    appear as a whole word (accent-insensitive) in the signal text.
+    """
+    if not name or not text:
+        return False
+    pattern = r"\b" + re.escape(_fold(name)) + r"\b"
+    return re.search(pattern, _fold(text)) is not None
 
 _DB_PATH = str(Path(__file__).parents[3] / "data" / "fcpricemaster.db")
 _FUZZY_THRESHOLD = 85
@@ -230,7 +256,10 @@ def run_tagging(db_path: str, batch_size: int = _BATCH_SIZE) -> tuple[int, list[
                     scorer=fuzz.token_sort_ratio,
                     score_cutoff=_FUZZY_THRESHOLD,
                 )
-                if match:
+                # Fuzzy is only a candidate finder — the matched alias must
+                # also appear word-bounded in the text ('price' fuzzy-hits the
+                # alias 'rice' but 'rice' is not a word in "the price is...").
+                if match and _name_matches(match[0], raw_text):
                     card_id = aliases[match[0]]
                     found_cards.add(card_id)
 
