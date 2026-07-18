@@ -23,6 +23,27 @@ This file holds sessions 31 and later. Sessions 1–30 live in **SESSION_LOG_ARC
 
 <!-- Entries go below this line, newest first -->
 
+### 2026-07-18 — session 40
+**Goal:** Real browser testing of every UI view with Playwright — observe and report only, no app-code changes.
+
+**Done:**
+- Test harness at `tests/browser/test_ui_real.py`: Playwright connects over CDP (`--remote-debugging-port=9222`) to a dedicated REAL Electron instance (AUTO_START_BACKEND=false), because bare localhost:5173 in plain Chromium has no `window.fcdb` — CDP attach is the only way to test the actual IPC-backed app. 11 screenshots in `tests/browser/screenshots/`.
+- **Results: 10/10 views work.** App loads (title FCPriceMaster, 8 nav items, zero console errors, zero network errors across the whole session). Recommendations: 30 cards, model badges (Mistral Small etc.), BUY/AVOID chips, stats + budget bars, Refresh works (lock-guarded, no dupes). Ask: 7 provider checkboxes, Kimi K2.6 correctly greyed "(offline)" + disabled, Mistral-only query returned AVOID 90% in 3.5s. Top Movers: 30 rows PC / 29 console, data switches with platform. Card Search: 12 results for "Messi", detail w/ chart + snapshots. Fodder: 13 rating rows, expandable top-10. Signals: 18 rows with context badges. Scraper Health: 18 sources. Settings: 2 rows. Platform toggle: visual state + data both switch.
+- **BUG FOUND (report-only): JS Ask context builder has the session-38 name-collision, unfixed.** Asking "…based on **price** data?" matched player "**Rice**" 9× (substring, no word boundary) — context chips read "Cards: Rice, Rice, Rice…" and Mistral's verdict was entirely about Rice variants' stale data. `buildAskContext` in `frontend/electron/main.cjs` needs the word-boundary/exact-match treatment the Python side got in session 38.
+- **WARNINGS:** (1) Card Search with 0 results renders nothing — no "no results" empty state (results-list only renders when length > 0). (2) Rec stats bar shows "Buys:" / "Avoids:" with blank values when 0 evaluated. (3) 12 `futgg_sweep_*` health sources show last-run June 12 (~51,400m ago) — the six-band sweep sources haven't re-run since; today's 06:00 UTC full-sweep job hadn't fired yet at test time. (4) `POST /health` is 404 — no such endpoint exists (port-bound is the liveness check).
+- Test-harness gotchas burned into the script comments: `has_text="Search"` matches the "Card Search" NAV item before the Search button (view remounts, query silently wiped — cost two false FAILs); result rows are `.result-row` not `.search-row`.
+
+**Next:** Fix the JS-side name matching in `buildAskContext` (word-boundary or alias/exact matching, mirroring session 38's Python fix) — it poisons every Ask query containing common words ("price"→Rice). Then the Card Search empty state.
+
+**Gotchas:**
+- Playwright must attach via CDP to Electron; `p.chromium.launch()` + goto 5173 tests a fcdb-less shell, not the app.
+- A second Electron instance on the same userData works fine alongside dev.ps1's (WAL DB, separate localStorage was NOT observed — rec model dropdown showed default Claude Haiku).
+
+**Changed files:**
+- `tests/browser/test_ui_real.py` (new — test harness)
+- `tests/browser/screenshots/*.png` (11 screenshots)
+- `SESSION_LOG.md`
+
 ### 2026-07-18 — session 39
 **Goal:** Fix the concurrent recommendation dedup race (scheduled + manual runs both pass the 10h guard before either writes).
 
